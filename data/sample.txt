@@ -1,6 +1,8 @@
 RAG study notes
 
-A RAG system retrieves relevant passages from documents before generating an answer.
+A RAG system   retrieves relevant passages from documents before generating an answer.
+
+
 
 Chunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk boundary.
 
