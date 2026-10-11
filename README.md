@@ -146,6 +146,92 @@ For chunking, `abcdefghij` with `chunk_size=6` and `overlap=2` produces
 `abcdef` at `[0:6]` and `efghij` at `[4:10]`. The shared `ef` provides overlap.
 Requiring `0 <= overlap < chunk_size` makes each new start move forward.
 
+## Chunking parameters and executed examples
+
+`chunk_size=120` and `overlap=20` are defaults, not requirements or measured
+optimal values. The runner explicitly passes these demonstration values.
+Other callers can supply different integers:
+
+```python
+document = {"text": "abcdefghij", "source": "example.txt"}
+chunks = chunk_document(document, chunk_size=6, overlap=2)
+```
+
+For a single call, we use fixed-size sliding windows. Starting at zero, the
+chunker selects `text[start:end]`, records the passage and source metadata, and
+advances to `end - overlap`. It stops as soon as a passage reaches the end.
+The final passage can be shorter than `chunk_size`.
+
+The following inputs were run against the implementation:
+
+| Input text | Size | Overlap | Output text and exclusive offsets |
+| --- | --- | --- | --- |
+| `abcdefghij` | 6 | 2 | `abcdef` at `[0:6]`; `efghij` at `[4:10]` |
+| `abcdefghij` | 6 | 0 | `abcdef` at `[0:6]`; `ghij` at `[6:10]` |
+| `abcdefghij` | 4 | 1 | `abcd` at `[0:4]`; `defg` at `[3:7]`; `ghij` at `[6:10]` |
+| `A red fox sleeps.` | 10 | 4 | `'A red fox '` at `[0:10]`; `'fox sleeps'` at `[6:16]`; `'eeps.'` at `[12:17]` |
+
+Every chunk retains `source="example.txt"` and a zero-based index. For the first
+example, the full output is:
+
+```python
+[
+    {"text": "abcdef", "source": "example.txt", "index": 0, "start": 0, "end": 6},
+    {"text": "efghij", "source": "example.txt", "index": 1, "start": 4, "end": 10},
+]
+```
+
+Here, `text[0:6]` selects `abcdef`. The next start is `6 - 2 = 4`, which repeats
+`ef`. The next end is `min(4 + 6, 10) = 10`, which selects `efghij` and stops.
+With zero overlap, the next start is 6 and there is no repeated text.
+
+The sentence example also exposes the limitation: character boundaries can cut
+words, producing a final fragment such as `eeps.`. This implementation makes
+the mechanics visible; sentence-, paragraph-, or token-aware chunking will need
+a different boundary-selection strategy.
+
+Smaller chunks isolate more specific passages but carry less context. Larger
+chunks retain more context but may include unrelated material. Overlap repeats
+context across boundaries and increases the text processed and stored. Actual
+parameter choices should be evaluated using the intended documents and questions.
+The current runner's 120/20 values let us inspect several passages from a short
+sample; they are character counts, not model token counts.
+
+The sample was also run using `data/sample.txt`, cleaned before chunking. Its
+exact 345-character chunking input is:
+
+```text
+RAG study notes
+
+A RAG system retrieves relevant passages from documents before generating an answer.
+
+Chunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk boundary.
+
+Source metadata records where a passage came from. A filename such as café-notes.txt may contain Unicode characters.
+```
+
+There is no final newline in this cleaned input. With size 120 and overlap 20,
+the actual output passages are shown below using Python string representations
+so paragraph separators remain visible:
+
+```text
+index=0, start=0, end=120
+'RAG study notes\n\nA RAG system retrieves relevant passages from documents before generating an answer.\n\nChunk overlap rep'
+
+index=1, start=100, end=220
+'.\n\nChunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk bo'
+
+index=2, start=200, end=320
+'a crosses a chunk boundary.\n\nSource metadata records where a passage came from. A filename such as café-notes.txt may co'
+
+index=3, start=300, end=345
+'afé-notes.txt may contain Unicode characters.'
+```
+
+All four chunks carry the absolute path to `data/sample.txt` as their source.
+Offsets describe the cleaned string. To rerun the full example, use
+`python3 main.py` from the project root.
+
 ## Checks
 
 ```bash
