@@ -1,0 +1,7 @@
+RAG study notes
+
+A RAG system retrieves relevant passages from documents before generating an answer.
+
+Chunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk boundary.
+
+Source metadata records where a passage came from. A filename such as café-notes.txt may contain Unicode characters.
