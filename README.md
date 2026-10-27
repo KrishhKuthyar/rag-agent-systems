@@ -15,6 +15,10 @@ retaining their source path, sequence number, and text offsets. File and decodin
 errors propagate to the caller. Each chunk also has a repeatable SHA-256 ID
 derived from its source, offsets, and complete passage text.
 
+A standalone cosine-similarity function compares numeric vector directions.
+The runner demonstrates it using hand-written vectors after displaying the
+document chunks. Text embeddings and semantic retrieval are still pending.
+
 ## Run
 
 Requires Python 3.9 or newer. No third-party dependencies are needed yet.
@@ -40,6 +44,8 @@ cleaned text, and chunks. The sample includes extra spaces, repeated blank lines
 and Unicode characters so the transformation is visible. Chunk output displays
 newlines as `\n` so boundaries can be inspected. Run it twice to compare the
 chunk IDs: unchanged input produces the same IDs on both runs.
+The final section displays a cosine-similarity demonstration using the query
+vector `[1.0, 0.0]` and four explicit candidate vectors.
 
 ## Processing behavior
 
@@ -116,12 +122,18 @@ separate. Searching and answering questions will build on that prepared text.
    starting position with overlap. It stops when a passage reaches the text end.
 8. Control returns to `main`, which prints the source, original text, cleaned
    text, and chunks. The original document dictionary is not modified.
+9. A separate math demonstration compares a hand-written query vector with
+   four hand-written candidates using `cosine_similarity`. The runner prints
+   every input vector and its score, formatted to four decimal places. The
+   document chunks are not assigned vectors or ranked in this step.
 
 ```text
 main.py → load_document(path) → {text, source}
         → clean_text(document["text"]) → cleaned string
         → chunk_document({text: cleaned string, source}) → list of chunks
         → print original text, cleaned text, and chunks
+
+hand-written query and candidate vectors → cosine_similarity → print scores
 ```
 
 ## Python syntax used
@@ -331,6 +343,89 @@ There is no persistence or deduplication operation yet. These IDs provide the
 keys for future storage updates; removing stale chunks after document edits
 will require an explicit reconciliation step.
 
+## Cosine similarity: intuition, calculation, and executed examples
+
+We have prepared source-bearing chunks. The next retrieval building block is
+the ability to compare vectors. An embedding model will later represent both
+questions and passages as vectors from the same model. For this step we use
+explicit numbers to understand the comparison before adding that dependency.
+
+A vector is a sequence of numbers. In two dimensions, imagine an arrow from
+the origin to those coordinates. Cosine similarity compares the directions of
+two nonzero arrows:
+
+```text
+cosine(A, B) = dot(A, B) / (length(A) * length(B))
+dot(A, B)    = sum(A[i] * B[i])
+length(A)   = sqrt(sum(A[i] * A[i]))
+```
+
+For `A=[1, 0]` and `B=[1, 1]`, the dot product is `1*1 + 0*1 = 1`.
+The lengths are `1` and `sqrt(2)`, so the score is approximately `0.7071`.
+Two arrows pointing in exactly the same direction score `1`; perpendicular
+arrows score `0`; arrows pointing in opposite directions score `-1`.
+Scores measure geometry. These hand-written vectors do not encode document
+meaning or establish that a real passage is relevant to a question.
+
+Actual inputs run by `python3 main.py`:
+
+```python
+query_vector = [1.0, 0.0]
+candidate_vectors = {
+    "same direction": [2.0, 0.0],
+    "diagonal": [1.0, 1.0],
+    "perpendicular": [0.0, 1.0],
+    "opposite direction": [-1.0, 0.0],
+}
+```
+
+Actual output after the document-ingestion output:
+
+```text
+Cosine similarity demo (hand-written vectors):
+Query: [1.0, 0.0]
+same direction: [2.0, 0.0] -> 1.0000
+diagonal: [1.0, 1.0] -> 0.7071
+perpendicular: [0.0, 1.0] -> 0.0000
+opposite direction: [-1.0, 0.0] -> -1.0000
+```
+
+`cosine_similarity(a, b)` in `rag/similarity.py` follows this flow:
+
+1. Reject empty vectors and unequal dimensions. Dimension is the coordinate
+   count; mismatched coordinates cannot be compared by this function.
+2. Reject non-finite coordinates such as NaN or infinity.
+3. Find each vector's largest absolute coordinate. Reject zero vectors, which
+   have no direction and would make the denominator zero.
+4. Divide each coordinate by its vector's largest absolute coordinate. Positive
+   rescaling preserves direction. It keeps intermediate values manageable for
+   both very large and very small finite inputs.
+5. Calculate the dot product and both lengths using those scaled coordinates.
+6. Divide by the product of the lengths, then clamp floating-point rounding to
+   the mathematical score range `[-1, 1]`. Return a new float without modifying
+   either input vector.
+
+For example, `[2, 0]` is rescaled to `[1, 0]`. The positive rescaling changes
+its length but leaves the cosine unchanged. `math.fsum` adds floating-point
+terms carefully; `math.sqrt` calculates the vector length from squared terms.
+
+| Syntax | Role in this implementation |
+| --- | --- |
+| `Sequence[float]` | Describe an ordered collection of numeric coordinates, such as a list or tuple. Type hints document intent; runtime checks handle invalid values. |
+| `all(math.isfinite(value) for value in vector)` | Check that every coordinate is finite. |
+| `max(abs(value) for value in a)` | Find the largest coordinate magnitude to use as a positive scaling factor. |
+| `[value / scale_a for value in a]` | Construct a new list containing the scaled coordinates. |
+| `zip(scaled_a, scaled_b)` | Pair corresponding coordinates; the length check prevents silent truncation of mismatched vectors. |
+| `math.fsum(x * y for x, y in zip(...))` | Sum coordinate products to calculate the dot product. |
+| `math.sqrt(...)` | Take the square root when calculating a vector's length. |
+| `candidate_vectors.items()` | Iterate over dictionary labels together with their vectors. |
+| `{score:.4f}` | Format a floating-point result with four digits after the decimal point. |
+
+This is a numeric comparison function, not a probability or a percentage. It
+does not generate embeddings, automatically select relevant chunks, or generate
+answers. Embeddings and retrieval will supply and use these vectors in later
+features. No API key or third-party library is needed for the math demonstration.
+
 ## Checks
 
 ```bash
@@ -349,6 +444,11 @@ Identity checks cover fixed version-one fingerprints, repeatable ingestion,
 distinct sources and positions, edited text, complete-text hashing, sequence
 index independence, and Unicode stability across separate Python processes.
 
+Similarity checks cover known geometric scores, symmetry, invariance under
+positive rescaling, very large and very small finite coordinates, invalid inputs,
+unchanged input vectors, list/tuple support, and the bounded score range. All 32
+tests and the runner were verified on Python 3.9.6 and 3.12.4 for this feature.
+
 ## Project structure
 
 ```text
@@ -358,13 +458,15 @@ rag-agent-systems/
 │   ├── __init__.py
 │   ├── chunking.py         # Overlapping chunks and stable passage IDs
 │   ├── documents.py        # Document loading
-│   └── preprocessing.py   # Prose whitespace cleanup
+│   ├── preprocessing.py    # Prose whitespace cleanup
+│   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
 │   └── sample.txt          # Sample input
 ├── tests/
 │   ├── test_chunk_ids.py
 │   ├── test_chunking.py
-│   └── test_preprocessing.py
+│   ├── test_preprocessing.py
+│   └── test_similarity.py
 └── README.md              # Implementation status and usage
 ```
 
@@ -388,6 +490,8 @@ rag-agent-systems/
   text; checked repeated ingestion, source separation, and cross-process stability.
 - Replaced the Python 3.10-only union annotation with `typing.Union` and checked
   startup and all tests on Python 3.9.6 and 3.12.4.
+- Added cosine similarity with numeric validation, safe rescaling, an explicit
+  vector demonstration, and checks for geometric and numerical behavior.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,
