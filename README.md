@@ -17,11 +17,23 @@ derived from its source, offsets, and complete passage text.
 
 ## Run
 
-Requires Python 3.10 or newer. No third-party dependencies are needed yet.
+Requires Python 3.9 or newer. No third-party dependencies are needed yet.
 
 ```bash
 python3 main.py
 ```
+
+Check the interpreter selected by your terminal with `python3 --version`.
+On this Mac, `/usr/bin/python3` is Python 3.9.6, while the development shell's
+`python3` resolves to Homebrew Python 3.12.4. The example and test suite are
+checked on both interpreters. An IDE or another terminal can select a different
+interpreter even when the command is spelled `python3` in each.
+
+The return annotation uses `Union[str, int]` from the standard-library `typing`
+module to mean a string or an integer. The shorter `str | int` syntax requires
+Python 3.10 or newer and raises a `TypeError` during import on Python 3.9.
+Type hints do not enforce values, but their expressions can still be evaluated
+while Python defines a function; that is why an annotation can stop startup.
 
 The example reads `data/sample.txt` and prints its source path, original text,
 cleaned text, and chunks. The sample includes extra spaces, repeated blank lines,
@@ -134,7 +146,7 @@ main.py → load_document(path) → {text, source}
 | `return` | Send a result to the function's caller. |
 | `f"Source: {document['source']}"` | Insert a value into a formatted string. |
 | `chunk_size: int = 120` | Describe an integer parameter and supply a default. |
-| `list[dict[str, str \| int]]` | Describe a list of dictionaries whose values can be strings or integers. |
+| `list[dict[str, Union[str, int]]]` | Describe a list of dictionaries whose values can be strings or integers, using the Python 3.9-compatible `typing.Union`. |
 | `if ...: raise ValueError(...)` | Reject a parameter value with an explicit error. |
 | `while start < len(text):` | Repeat while there is more text to process. |
 | `min(start + chunk_size, len(text))` | Clamp a passage's end to the text length. |
@@ -374,6 +386,8 @@ rag-agent-systems/
   offsets in cleaned text; checked coverage and parameter validation.
 - Added versioned SHA-256 chunk IDs derived from source, positions, and complete
   text; checked repeated ingestion, source separation, and cross-process stability.
+- Replaced the Python 3.10-only union annotation with `typing.Union` and checked
+  startup and all tests on Python 3.9.6 and 3.12.4.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

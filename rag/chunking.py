@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from typing import Union
 
 
 def create_chunk_id(source: str, start: int, end: int, text: str) -> str:
@@ -26,7 +27,7 @@ def chunk_document(
     document: dict[str, str],
     chunk_size: int = 120,
     overlap: int = 20,
-) -> list[dict[str, str | int]]:
+) -> list[dict[str, Union[str, int]]]:
     """Return character-based chunks with positions in the supplied text."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be greater than zero")
