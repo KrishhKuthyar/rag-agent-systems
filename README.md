@@ -19,8 +19,9 @@ A standalone cosine-similarity function compares numeric vector directions.
 The local runner demonstrates it using hand-written vectors after displaying
 the document chunks. An optional OpenAI embedding adapter and explicit API
 runner now connect chunk text and a question to one consistent embedding model.
-Offline adapter, SDK transport, and runner checks pass; a live model response
-has not yet been verified because no API key was configured during development.
+Offline adapter, SDK transport, and runner checks pass. A key is configured,
+but live requests returned HTTP 429 with `credit_balance_exhausted`, so live
+vectors and semantic scores have not yet been verified.
 Semantic ranking, persistence, and answer generation remain pending.
 
 ## Run
@@ -470,12 +471,33 @@ retries disabled. Provider limits or API failures are reported as failed runs;
 there is no token-counting scheduler, persistent cache, or retry policy yet.
 
 The virtual environment was created and dependencies installed during this
-feature's development. The command currently stops before requesting embeddings
-if the key is missing or still the example placeholder:
+feature's development. The command stops before requesting embeddings if the
+key is missing or still the example placeholder:
 
 ```text
 embedding_demo.py: error: set OPENAI_API_KEY in your environment or this project's ignored .env file
 ```
+
+With a key configured, the live verification request reached the API and failed
+with the following safe diagnostic identifiers:
+
+```text
+HTTP status: 429
+API error code: credit_balance_exhausted
+API error type: insufficient_quota
+```
+
+The runner now reports that cause directly:
+
+```text
+OpenAI API credit balance is exhausted (credit_balance_exhausted). Add credits in your OpenAI API billing settings before retrying.
+```
+
+This code means the organization's prepaid API balance is depleted. The
+[official error guide](https://developers.openai.com/api/docs/guides/error-codes)
+directs users to add credits in API billing settings. Repeating the request
+without restoring the balance will not resolve this billing error. The run
+accepted no embeddings and did not report fabricated vectors or scores.
 
 Python 3.9 can still run the core pipeline and dependency-free tests. Running
 the API example on 3.9 gives a message to use `.venv/bin/python`, rather than
@@ -546,7 +568,7 @@ scores. An SDK runner check submitted these five inputs through a simulated HTTP
 transport, accepted five 1,536-dimensional test vectors, and printed four
 comparison scores. No actual model request was made during that check.
 
-Once a key is configured, the live runner should print five accepted embeddings
+Once API credits are available, the live runner should print five accepted embeddings
 and a 1,536-dimensional query vector, followed by the actual vector previews and
 scores. The numbers are intentionally not fabricated or hard-coded here.
 
@@ -576,10 +598,12 @@ tests and the runner were verified on Python 3.9.6 and 3.12.4 for this feature.
 
 The embedding feature adds checks for response order, missing or duplicate
 indexes, model and dimension mismatches, non-finite or zero vectors, blank input,
-and propagated failures. The current suite has 46 tests: all pass in the Python
+and propagated failures. The current suite has 47 tests: all pass in the Python
 3.12 environment with optional dependencies installed; without those dependencies,
-44 pass and the two SDK transport tests are skipped. SDK tests use simulated
-HTTP responses and require neither an API key nor a network connection.
+44 pass and the three SDK-backed tests are skipped. SDK tests use simulated
+HTTP responses and require neither an API key nor a network connection. They
+also verify that exhausted-credit failures produce an actionable message,
+expose no key or raw error body, and are not counted as successful embeddings.
 
 ## Project structure
 
@@ -610,7 +634,7 @@ rag-agent-systems/
 
 ## Planned work
 
-- Verify live embeddings after API configuration, then add similarity ranking.
+- Restore API credits and verify live embeddings, then add similarity ranking.
 - Answers grounded in retrieved passages, with source references.
 - Vector-store persistence and DOCX/MinIO integrations.
 - Framework integrations, evaluation, reliability, and agent tools.
@@ -632,7 +656,8 @@ rag-agent-systems/
   vector demonstration, and checks for geometric and numerical behavior.
 - Added an optional OpenAI embedding adapter and runner with consistent model
   and dimensions, checked response mapping, isolated dependencies, and ignored
-  key configuration. Live verification awaits a locally configured API key.
+  key configuration. Live verification reached the API but is blocked by an
+  exhausted API credit balance; the runner now reports this cause explicitly.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

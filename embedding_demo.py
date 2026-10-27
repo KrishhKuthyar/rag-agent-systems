@@ -54,6 +54,11 @@ def main() -> None:
         with OpenAI(api_key=api_key, timeout=30.0, max_retries=0) as client:
             vectors = embed_texts(texts, client)
     except APIError as error:
+        if getattr(error, "code", None) == "credit_balance_exhausted":
+            raise SystemExit(
+                "OpenAI API credit balance is exhausted (credit_balance_exhausted). "
+                "Add credits in your OpenAI API billing settings before retrying."
+            ) from None
         raise SystemExit(
             f"OpenAI request failed ({type(error).__name__}). "
             "Check your API key, API access/quota, and network connection."

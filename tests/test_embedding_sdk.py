@@ -1,7 +1,14 @@
 """Exercise the optional SDK over a simulated HTTP transport, without real API calls."""
 
+from contextlib import redirect_stdout
+import io
 import json
+import os
+import sys
 import unittest
+from unittest.mock import patch
+
+import embedding_demo
 
 from rag.embeddings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embed_texts
 
@@ -73,3 +80,44 @@ class EmbeddingSDKTests(unittest.TestCase):
         ) as client:
             with self.assertRaises(AuthenticationError):
                 embed_texts(["passage"], client)
+
+    def test_runner_reports_exhausted_credits_without_exposing_secrets(self):
+        requests = []
+        output = io.StringIO()
+        test_secret = "sensitive-test-value"
+
+        def handle(request):
+            requests.append(request)
+            return httpx2.Response(
+                429,
+                json={
+                    "error": {
+                        "code": "credit_balance_exhausted",
+                        "type": "insufficient_quota",
+                        "message": test_secret,
+                    }
+                },
+            )
+
+        def simulated_client(**kwargs):
+            return OpenAI(
+                **kwargs,
+                base_url="https://example.invalid/v1",
+                http_client=httpx2.Client(transport=httpx2.MockTransport(handle)),
+            )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": test_secret}), \
+             patch("dotenv.load_dotenv", return_value=False), \
+             patch("openai.OpenAI", side_effect=simulated_client), \
+             patch.object(sys, "argv", ["embedding_demo.py"]), \
+             redirect_stdout(output):
+            with self.assertRaises(SystemExit) as raised:
+                embedding_demo.main()
+
+        message = str(raised.exception)
+        self.assertIn("credit_balance_exhausted", message)
+        self.assertIn("Add credits", message)
+        self.assertNotIn(test_secret, message)
+        self.assertNotIn(test_secret, output.getvalue())
+        self.assertNotIn("Accepted embeddings:", output.getvalue())
+        self.assertEqual(len(requests), 1)
