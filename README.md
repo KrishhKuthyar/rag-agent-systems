@@ -16,12 +16,18 @@ errors propagate to the caller. Each chunk also has a repeatable SHA-256 ID
 derived from its source, offsets, and complete passage text.
 
 A standalone cosine-similarity function compares numeric vector directions.
-The runner demonstrates it using hand-written vectors after displaying the
-document chunks. Text embeddings and semantic retrieval are still pending.
+The local runner demonstrates it using hand-written vectors after displaying
+the document chunks. An optional OpenAI embedding adapter and explicit API
+runner now connect chunk text and a question to one consistent embedding model.
+Offline adapter, SDK transport, and runner checks pass; a live model response
+has not yet been verified because no API key was configured during development.
+Semantic ranking, persistence, and answer generation remain pending.
 
 ## Run
 
-Requires Python 3.9 or newer. No third-party dependencies are needed yet.
+The local example requires Python 3.9 or newer and no third-party dependencies.
+The optional API example below uses a Python 3.12 virtual environment and pinned
+dependencies. The installed OpenAI SDK and python-dotenv require Python 3.10+.
 
 ```bash
 python3 main.py
@@ -426,10 +432,129 @@ does not generate embeddings, automatically select relevant chunks, or generate
 answers. Embeddings and retrieval will supply and use these vectors in later
 features. No API key or third-party library is needed for the math demonstration.
 
+## Text embeddings: connecting passages and questions
+
+An embedding model converts text into a numeric vector. The question's vector
+and each passage's vector must come from the same model and dimension setting
+for this comparison. We request `text-embedding-3-small` with 1,536 dimensions
+for all inputs in a single batch. The model and default size are documented in
+the [official embedding guide](https://developers.openai.com/api/docs/guides/embeddings).
+
+This step implements generation and validation of the vectors and displays
+their cosine scores in source order. It does not yet sort passages, choose a
+relevance threshold, save vectors, or generate an answer.
+
+### Set up and run the API example
+
+The original `python3 main.py` command remains local. To install the optional
+API dependencies in a project environment:
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements-embeddings.txt
+cp -n .env.example .env
+```
+
+Open `.env` in your editor and replace the placeholder with your OpenAI API key.
+The real `.env` and `.venv` are ignored by Git; `.env.example` contains only a
+placeholder. An existing environment variable takes precedence over the file.
+The runner never prints the key or raw API error bodies.
+
+```bash
+.venv/bin/python embedding_demo.py --query "Why do chunks overlap?"
+```
+
+This command submits the displayed passages and question to the OpenAI API and
+uses API billing. It uses one request with a 30-second timeout and automatic
+retries disabled. Provider limits or API failures are reported as failed runs;
+there is no token-counting scheduler, persistent cache, or retry policy yet.
+
+The virtual environment was created and dependencies installed during this
+feature's development. The command currently stops before requesting embeddings
+if the key is missing or still the example placeholder:
+
+```text
+embedding_demo.py: error: set OPENAI_API_KEY in your environment or this project's ignored .env file
+```
+
+Python 3.9 can still run the core pipeline and dependency-free tests. Running
+the API example on 3.9 gives a message to use `.venv/bin/python`, rather than
+importing an incompatible SDK.
+
+### Input and flow of control
+
+The default example reads and cleans `data/sample.txt`, makes the same four
+120-character chunks with 20-character overlap, and appends the question as
+the fifth input. These are the exact texts prepared for the request:
+
+```text
+Input 0 (chunk 0): 'RAG study notes\n\nA RAG system retrieves relevant passages from documents before generating an answer.\n\nChunk overlap rep'
+Input 1 (chunk 1): '.\n\nChunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk bo'
+Input 2 (chunk 2): 'a crosses a chunk boundary.\n\nSource metadata records where a passage came from. A filename such as café-notes.txt may co'
+Input 3 (chunk 3): 'afé-notes.txt may contain Unicode characters.'
+Input 4 (query): 'Why do chunks overlap?'
+```
+
+The runner follows this sequence:
+
+1. Parse `--query` and check the interpreter, dependencies, and API key.
+2. Load, clean, and chunk the sample, retaining source metadata and stable IDs.
+3. Print every submitted text and the requested model and dimensions.
+4. Construct an OpenAI client and call `embed_texts(texts, client)`.
+5. Validate the complete response and restore its input order using result indexes.
+6. Treat the last vector as the query vector and compare it with the preceding
+   four chunk vectors using our existing cosine function.
+7. Print each chunk's ID, text, dimensions, vector preview, and measured score.
+
+```python
+response = client.embeddings.create(
+    model="text-embedding-3-small",
+    input=texts,
+    dimensions=1536,
+    encoding_format="float",
+)
+```
+
+The [embeddings API reference](https://developers.openai.com/api/reference/resources/embeddings/methods/create)
+defines the batch input, dimension parameter, and result indexes used here.
+
+### Response checks and syntax
+
+`embed_texts` checks that the response model matches, there is one result per
+input, indexes cover every input exactly once, and every vector contains 1,536
+finite numbers with a nonzero direction. It rejects the entire batch on a bad
+response instead of dropping a passage or inventing a replacement vector.
+An empty input batch returns an empty list without making a request. A batch
+containing blank or nonstring items is rejected before the request.
+
+| Syntax | Meaning here |
+| --- | --- |
+| `embed_texts(texts, client)` | Pass the texts and an SDK client into the function. Tests can supply a simulated client. |
+| `client.embeddings.create(...)` | Call the SDK's embedding endpoint with named request arguments. |
+| `response.data` | Access the returned embedding results. |
+| `item.index` | Identify the input position associated with a returned vector. |
+| `sorted(response.data, key=lambda result: result.index)` | Put results in input order using their indexes. |
+| `vectors[-1]` | Select the last vector, which belongs to the appended question. |
+| `zip(chunks, vectors[:-1])` | Pair each chunk with its corresponding vector, excluding the query vector. |
+| `query_vector[:5]` | Display only the first five coordinates as a preview. The calculation uses the full vector. |
+| `load_dotenv(path, override=False)` | Load local configuration without replacing existing environment variables. |
+| `with OpenAI(...) as client` | Close the client's resources when the request scope ends. |
+
+There is no captured live vector output yet. Offline checks used simulated
+responses explicitly identified as fixtures; they do not establish real semantic
+scores. An SDK runner check submitted these five inputs through a simulated HTTP
+transport, accepted five 1,536-dimensional test vectors, and printed four
+comparison scores. No actual model request was made during that check.
+
+Once a key is configured, the live runner should print five accepted embeddings
+and a 1,536-dimensional query vector, followed by the actual vector previews and
+scores. The numbers are intentionally not fabricated or hard-coded here.
+
 ## Checks
 
 ```bash
 python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 Checks cover Unicode and paragraph preservation, individual line breaks,
@@ -449,15 +574,26 @@ positive rescaling, very large and very small finite coordinates, invalid inputs
 unchanged input vectors, list/tuple support, and the bounded score range. All 32
 tests and the runner were verified on Python 3.9.6 and 3.12.4 for this feature.
 
+The embedding feature adds checks for response order, missing or duplicate
+indexes, model and dimension mismatches, non-finite or zero vectors, blank input,
+and propagated failures. The current suite has 46 tests: all pass in the Python
+3.12 environment with optional dependencies installed; without those dependencies,
+44 pass and the two SDK transport tests are skipped. SDK tests use simulated
+HTTP responses and require neither an API key nor a network connection.
+
 ## Project structure
 
 ```text
 rag-agent-systems/
 ├── main.py                 # Runnable entry point
+├── embedding_demo.py       # Explicit OpenAI API example
+├── requirements-embeddings.txt
+├── .env.example            # Placeholder configuration
 ├── rag/
 │   ├── __init__.py
 │   ├── chunking.py         # Overlapping chunks and stable passage IDs
 │   ├── documents.py        # Document loading
+│   ├── embeddings.py       # Embedding requests and response validation
 │   ├── preprocessing.py    # Prose whitespace cleanup
 │   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
@@ -465,6 +601,8 @@ rag-agent-systems/
 ├── tests/
 │   ├── test_chunk_ids.py
 │   ├── test_chunking.py
+│   ├── test_embeddings.py
+│   ├── test_embedding_sdk.py
 │   ├── test_preprocessing.py
 │   └── test_similarity.py
 └── README.md              # Implementation status and usage
@@ -472,7 +610,7 @@ rag-agent-systems/
 
 ## Planned work
 
-- Embeddings and similarity search.
+- Verify live embeddings after API configuration, then add similarity ranking.
 - Answers grounded in retrieved passages, with source references.
 - Vector-store persistence and DOCX/MinIO integrations.
 - Framework integrations, evaluation, reliability, and agent tools.
@@ -492,6 +630,9 @@ rag-agent-systems/
   startup and all tests on Python 3.9.6 and 3.12.4.
 - Added cosine similarity with numeric validation, safe rescaling, an explicit
   vector demonstration, and checks for geometric and numerical behavior.
+- Added an optional OpenAI embedding adapter and runner with consistent model
+  and dimensions, checked response mapping, isolated dependencies, and ignored
+  key configuration. Live verification awaits a locally configured API key.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,
