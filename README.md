@@ -12,7 +12,8 @@ The loader returns a dictionary containing the original text and absolute
 source path. A separate function produces cleaned text without modifying that
 record. The chunker splits the cleaned text into character-based passages,
 retaining their source path, sequence number, and text offsets. File and decoding
-errors propagate to the caller.
+errors propagate to the caller. Each chunk also has a repeatable SHA-256 ID
+derived from its source, offsets, and complete passage text.
 
 ## Run
 
@@ -25,7 +26,8 @@ python3 main.py
 The example reads `data/sample.txt` and prints its source path, original text,
 cleaned text, and chunks. The sample includes extra spaces, repeated blank lines,
 and Unicode characters so the transformation is visible. Chunk output displays
-newlines as `\n` so boundaries can be inspected.
+newlines as `\n` so boundaries can be inspected. Run it twice to compare the
+chunk IDs: unchanged input produces the same IDs on both runs.
 
 ## Processing behavior
 
@@ -47,6 +49,7 @@ and returns a list of chunk dictionaries. Each contains:
 
 | Field | Meaning |
 | --- | --- |
+| `id` | A 64-character SHA-256 fingerprint of the source, positions, text, and identity format version. |
 | `text` | The passage selected from the supplied text. |
 | `source` | The document's source path. |
 | `index` | The chunk's zero-based sequence number within this document. |
@@ -94,9 +97,11 @@ separate. Searching and answering questions will build on that prepared text.
    limits blank-line runs and returns the result as a new string.
 6. `main` makes a document record containing the cleaned text and the same source,
    then passes it to `chunk_document` with a size of 120 and overlap of 20.
-7. The chunker checks its parameters, slices a passage, records its metadata, and
-   advances its starting position while retaining the requested overlap. It
-   stops as soon as the last passage reaches the end of the text.
+7. The chunker checks its parameters and slices a passage. `create_chunk_id`
+   serializes the source, offsets, complete passage text, and format version to
+   JSON, encodes that record as UTF-8, and calculates its SHA-256 fingerprint.
+   The chunker adds the ID and metadata to its result list, then advances its
+   starting position with overlap. It stops when a passage reaches the text end.
 8. Control returns to `main`, which prints the source, original text, cleaned
    text, and chunks. The original document dictionary is not modified.
 
@@ -137,6 +142,9 @@ main.py → load_document(path) → {text, source}
 | `start = end - overlap` | Begin the next passage before the previous passage ends. |
 | `break` | Leave the loop once the end of the text has been reached. |
 | `repr(chunk["text"])` | Display text with escapes such as `\n` visible. |
+| `json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))` | Serialize fields with sorted keys, Unicode characters, and fixed JSON separators. |
+| `payload.encode("utf-8")` | Convert the serialized string into the bytes required by a hash function. |
+| `hashlib.sha256(...).hexdigest()` | Calculate a deterministic SHA-256 fingerprint and return it as hexadecimal text. |
 
 For example, `First   paragraph.\n\n\nSecond paragraph.` becomes
 `First paragraph.\n\nSecond paragraph.` The paragraph boundary survives. Cleaning
@@ -176,8 +184,14 @@ example, the full output is:
 
 ```python
 [
-    {"text": "abcdef", "source": "example.txt", "index": 0, "start": 0, "end": 6},
-    {"text": "efghij", "source": "example.txt", "index": 1, "start": 4, "end": 10},
+    {
+        "id": "453a196c5082f5ddc6bbd394c8fa99b9f6c47f8ed923ed656046816bbd4c71a6",
+        "text": "abcdef", "source": "example.txt", "index": 0, "start": 0, "end": 6,
+    },
+    {
+        "id": "8194dfdf6ebe6efac289bad84b39770e50c61b774fbaebf4768b013e77cfbe2f",
+        "text": "efghij", "source": "example.txt", "index": 1, "start": 4, "end": 10,
+    },
 ]
 ```
 
@@ -232,6 +246,79 @@ All four chunks carry the absolute path to `data/sample.txt` as their source.
 Offsets describe the cleaned string. To rerun the full example, use
 `python3 main.py` from the project root.
 
+## Stable chunk identity
+
+Chunk `index=0` describes order within a document; many documents have a first
+chunk. A stable ID distinguishes the actual source passage and lets future
+storage recognize it on repeated ingestion. It also distinguishes repeated
+copies of the same text at different positions in one document.
+
+`create_chunk_id(source, start, end, text)` builds this versioned record:
+
+```python
+{
+    "version": 1,
+    "source": "notes.txt",
+    "start": 0,
+    "end": 6,
+    "text": "abcdef",
+}
+```
+
+The helper serializes it with sorted keys and fixed separators. JSON preserves
+field boundaries even when text contains punctuation, quotes, or newlines. It
+then encodes the record as UTF-8 bytes and hashes it with SHA-256, returning all
+64 hexadecimal characters. The fixed format and version are part of the ID
+contract; changing them changes the fingerprints.
+
+The function is called as each chunk is created, before the chunk dictionary is
+appended to the results. Its `id` joins the existing text and source metadata.
+The sequence index is excluded: a passage with identical source, positions, and
+text retains its ID even if a different chunking configuration changes its
+sequence number. Chunk size and overlap affect IDs through the passages they
+produce, rather than being separate identity fields.
+
+Actual input used for the repeatability check:
+
+```python
+document = {"text": "abcdefghij", "source": "notes.txt"}
+first = chunk_document(document, chunk_size=6, overlap=2)
+second = chunk_document(document, chunk_size=6, overlap=2)
+print(first == second)
+```
+
+Output: `True`. Both runs return these passages and IDs:
+
+```text
+[0:6]  'abcdef'
+81d339606e747275c108694cdf3b946016a58f573c983432af588d827e712521
+
+[4:10] 'efghij'
+8e9cdfa7241e85beafa0a33b6872952effd6482d79da308c39b680224e589fee
+```
+
+Keeping the text and parameters the same but setting `source="other.txt"`
+produces these different IDs:
+
+```text
+[0:6]  'abcdef'
+0339ebe08ff4cfab1134f91c4b907cc43f6003d1647ed6d310a71ca4f8afc2b5
+
+[4:10] 'efghij'
+67b708adceac84b583b6a5da7661ca0e0cb2d07f1d195a1e1de2fe21619d390e
+```
+
+IDs use the source string exactly as supplied. The file loader supplies absolute
+paths, so moving the project or renaming a file changes its IDs. A stable
+document key independent of local filesystem layout can be introduced when
+storage is added. Editing text or shifting chunk positions also changes the
+affected IDs; these are fingerprints of passages in a specific source location,
+not permanent identities that follow a passage through arbitrary edits.
+
+There is no persistence or deduplication operation yet. These IDs provide the
+keys for future storage updates; removing stale chunks after document edits
+will require an explicit reconciliation step.
+
 ## Checks
 
 ```bash
@@ -246,6 +333,10 @@ Chunking checks cover exact overlap and offsets, source metadata, a shorter
 final passage, empty documents, invalid parameters, Unicode reconstruction,
 maximum valid overlap, and retaining the original document unchanged.
 
+Identity checks cover fixed version-one fingerprints, repeatable ingestion,
+distinct sources and positions, edited text, complete-text hashing, sequence
+index independence, and Unicode stability across separate Python processes.
+
 ## Project structure
 
 ```text
@@ -253,12 +344,13 @@ rag-agent-systems/
 ├── main.py                 # Runnable entry point
 ├── rag/
 │   ├── __init__.py
-│   ├── chunking.py         # Overlapping character-based chunks
+│   ├── chunking.py         # Overlapping chunks and stable passage IDs
 │   ├── documents.py        # Document loading
 │   └── preprocessing.py   # Prose whitespace cleanup
 ├── data/
 │   └── sample.txt          # Sample input
 ├── tests/
+│   ├── test_chunk_ids.py
 │   ├── test_chunking.py
 │   └── test_preprocessing.py
 └── README.md              # Implementation status and usage
@@ -266,7 +358,6 @@ rag-agent-systems/
 
 ## Planned work
 
-- Stable chunk IDs that distinguish sources and repeated ingestion.
 - Embeddings and similarity search.
 - Answers grounded in retrieved passages, with source references.
 - Vector-store persistence and DOCX/MinIO integrations.
@@ -281,6 +372,8 @@ rag-agent-systems/
   example, and checks for preserved content and repeatable results.
 - Added overlapping character-based chunks with source paths, indexes, and
   offsets in cleaned text; checked coverage and parameter validation.
+- Added versioned SHA-256 chunk IDs derived from source, positions, and complete
+  text; checked repeated ingestion, source separation, and cross-process stability.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

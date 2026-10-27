@@ -1,5 +1,26 @@
 """Split document text into overlapping passages with source metadata."""
 
+import hashlib
+import json
+
+
+def create_chunk_id(source: str, start: int, end: int, text: str) -> str:
+    """Fingerprint a source passage using a fixed, versioned JSON record."""
+    record = {
+        "version": 1,
+        "source": source,
+        "start": start,
+        "end": end,
+        "text": text,
+    }
+    payload = json.dumps(
+        record,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 def chunk_document(
     document: dict[str, str],
@@ -19,9 +40,11 @@ def chunk_document(
 
     while start < len(text):
         end = min(start + chunk_size, len(text))
+        chunk_text = text[start:end]
         chunks.append(
             {
-                "text": text[start:end],
+                "id": create_chunk_id(source, start, end, chunk_text),
+                "text": chunk_text,
                 "source": source,
                 "index": len(chunks),
                 "start": start,

@@ -25,6 +25,7 @@ def main() -> None:
     print(f"\nChunks: {len(chunks)} (size={chunk_size}, overlap={overlap} characters)")
     for chunk in chunks:
         print(f"\nChunk {chunk['index']}: [{chunk['start']}:{chunk['end']}]")
+        print(f"ID: {chunk['id']}")
         print(f"Source: {chunk['source']}")
         print(repr(chunk["text"]))
 
