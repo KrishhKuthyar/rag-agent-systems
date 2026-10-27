@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-import embedding_demo
+import openai_embedding_demo
 
 from rag.embeddings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, embed_texts
 
@@ -21,7 +21,7 @@ else:
     SDK_AVAILABLE = True
 
 
-@unittest.skipUnless(SDK_AVAILABLE, "install optional embedding dependencies in .venv")
+@unittest.skipUnless(SDK_AVAILABLE, "optional OpenAI dependencies are not installed")
 class EmbeddingSDKTests(unittest.TestCase):
     def test_real_sdk_request_and_response_parsing_with_simulated_http(self):
         requests = []
@@ -109,10 +109,10 @@ class EmbeddingSDKTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": test_secret}), \
              patch("dotenv.load_dotenv", return_value=False), \
              patch("openai.OpenAI", side_effect=simulated_client), \
-             patch.object(sys, "argv", ["embedding_demo.py"]), \
+             patch.object(sys, "argv", ["openai_embedding_demo.py"]), \
              redirect_stdout(output):
             with self.assertRaises(SystemExit) as raised:
-                embedding_demo.main()
+                openai_embedding_demo.main()
 
         message = str(raised.exception)
         self.assertIn("credit_balance_exhausted", message)
