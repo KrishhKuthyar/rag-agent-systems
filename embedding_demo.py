@@ -14,6 +14,7 @@ from rag.local_embeddings import (
     load_local_model,
 )
 from rag.preprocessing import clean_text
+from rag.retrieval import rank_chunks
 from rag.similarity import cosine_similarity
 
 
@@ -22,6 +23,7 @@ def main() -> None:
         description="Embed sample passages and a question with a free local MiniLM model."
     )
     parser.add_argument("--query", default="Why do chunks overlap?")
+    parser.add_argument("--top-k", type=int, default=2, help="maximum number of passages to retrieve")
     parser.add_argument(
         "--download-model",
         action="store_true",
@@ -30,6 +32,8 @@ def main() -> None:
     args = parser.parse_args()
     if not args.query.strip():
         parser.error("--query must contain text")
+    if args.top_k <= 0:
+        parser.error("--top-k must be a positive integer")
     if sys.version_info < (3, 10):
         parser.error("local model dependencies require Python 3.10+; use .venv/bin/python")
 
@@ -57,6 +61,7 @@ def main() -> None:
             allow_download=args.download_model,
         )
         vectors = embed_texts_locally(texts, model)
+        matches = rank_chunks(chunks, vectors[:-1], vectors[-1], top_k=args.top_k)
     except ImportError:
         parser.error("install dependencies with: .venv/bin/python -m pip install -r requirements-embeddings.txt")
     except OSError:
@@ -77,6 +82,14 @@ def main() -> None:
         print(f"Dimensions: {len(vector)}")
         print(f"Vector preview (first 5): {vector[:5]}")
         print(f"Cosine similarity to query: {score:.4f}")
+
+    print(f"\nRetrieved passages: {len(matches)} of {len(chunks)} (top_k={args.top_k})")
+    for rank, (chunk, score) in enumerate(matches, start=1):
+        print(f"\nRank {rank}: chunk {chunk['index']} | cosine={score:.4f}")
+        print(f"Source: {chunk['source']}")
+        print(f"Offsets: [{chunk['start']}:{chunk['end']}]")
+        print(f"ID: {chunk['id']}")
+        print(f"Text: {chunk['text']!r}")
 
 
 if __name__ == "__main__":

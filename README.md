@@ -21,7 +21,9 @@ the document chunks. The default embedding demo now uses a free local MiniLM
 model to produce real 384-dimensional vectors and compare a question with the
 four sample passages. Downloading and cached offline inference have both been
 verified on this Mac. No API key or paid request is needed for local embeddings.
-Semantic ranking, persistence, and answer generation remain pending.
+The demo also retrieves the top matching passages in descending cosine order,
+preserving their text, IDs, sources, and offsets. Persistence and answer
+generation remain pending.
 
 ## Run
 
@@ -522,8 +524,8 @@ Python lists for our cosine function. The helper checks the batch count and
 requires every vector to contain 384 finite numbers with a nonzero direction.
 It rejects the entire result on failure and never substitutes invented vectors.
 The original chunk IDs and source metadata remain attached to the displayed
-passages. Results are displayed in source order; automatic ranking is the next
-feature.
+passages. The demo displays all vector comparisons in source order, followed
+by the selected passages ranked by similarity.
 
 ### Actual local input and output
 
@@ -550,7 +552,67 @@ across boundaries. It has the highest score for this example. These measured
 scores are not probabilities or a general accuracy benchmark. The second run
 loaded the cache without network access and reproduced the displayed scores.
 
-### Optional historical OpenAI example
+## Retrieve the most similar passages
+
+Retrieval selects document passages to use as context for a question. The local
+embedding demo now performs this step after creating the vectors. It does not
+generate an answer. `--top-k` controls the maximum number of passages returned;
+its default is 2 and it must be a positive integer.
+
+```bash
+.venv/bin/python embedding_demo.py --query "Why do chunks overlap?" --top-k 2
+```
+
+The flow is: prepare the four sample chunks, embed them and the question with
+the same cached MiniLM model, score every passage, sort scores from highest to
+lowest, and return up to `top_k` passages. No new dependency, model download, or
+paid request is needed for this feature.
+
+`rank_chunks` in `rag/retrieval.py` accepts chunks, their corresponding vectors,
+the query vector, and `top_k`. Each result is a `(chunk, score)` tuple. The chunk
+is copied so changing the result does not change its original metadata.
+The selection uses:
+
+```python
+ranked_chunks = sorted(scored_chunks, key=lambda result: result[1], reverse=True)
+return ranked_chunks[:top_k]
+```
+
+`sorted` creates a new ordered list. `lambda result: result[1]` is a small
+function that extracts the score (the tuple's second item). `reverse=True`
+orders scores from highest to lowest. `[:top_k]` takes the first `top_k` items.
+Equal scores keep their original input order. A limit larger than the collection
+returns all available passages, and an empty collection returns no passages.
+
+The helper checks that each chunk has one vector and validates the query and
+every passage vector before selection. Invalid dimensions, zero vectors,
+non-finite values, and incomplete batches raise errors instead of silently
+dropping passages. As with any cosine comparison, the caller must supply
+vectors from the same model; matching dimensions alone do not establish this.
+
+Actual output from the command above, using 120-character chunks with
+20-character overlap and five real 384-dimensional embeddings:
+
+```text
+Retrieved passages: 2 of 4 (top_k=2)
+
+Rank 1: chunk 1 | cosine=0.5839
+Offsets: [100:220]
+Text: '.\n\nChunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk bo'
+
+Rank 2: chunk 0 | cosine=0.3663
+Offsets: [0:120]
+Text: 'RAG study notes\n\nA RAG system retrieves relevant passages from documents before generating an answer.\n\nChunk overlap rep'
+```
+
+Each selected result also prints its complete source path and existing chunk ID.
+To inspect selection manually, change `--top-k 2` to `--top-k 1`: only the first
+ranked passage should remain. This feature scans all vectors in memory on every
+run. There is no persistent vector index or relevance threshold yet. A top
+result can still be unrelated when the document lacks an answer; a similarity
+score is not a confidence percentage.
+
+## Optional historical OpenAI example
 
 The previous paid integration is retained separately in
 `openai_embedding_demo.py`, `rag/embeddings.py`, and `requirements-openai.txt`.
@@ -595,10 +657,15 @@ expose no key or raw error body, and are not counted as successful embeddings.
 
 Local embedding checks cover offline defaults, key-free execution, pinned model
 loading, token limits without truncation, consistent dimensions, complete batches,
-finite nonzero vectors, and preserved inputs. The full suite has 62 tests: all
-pass in the Python 3.12 development environment. On Python 3.9 without the
-optional OpenAI SDK, 59 pass and three historical SDK checks are skipped. The
-real local model was also run twice, including a cached run without network access.
+finite nonzero vectors, and preserved inputs. The real local model was also
+run twice, including a cached run without network access.
+
+Retrieval adds 12 tests covering descending scores, top-k limits, stable ties,
+negative scores, empty collections, retained source metadata, unchanged inputs,
+invalid vectors and incomplete batches, and CLI selection and validation. All
+74 tests pass in the project environment; on Python 3.9 and the development
+shell's Python, 71 pass and three optional SDK tests are skipped. The ranked
+example was also run with the real cached model and returned chunks 1 then 0.
 
 ## Project structure
 
@@ -617,6 +684,7 @@ rag-agent-systems/
 │   ├── embeddings.py       # Embedding requests and response validation
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
 │   ├── preprocessing.py    # Prose whitespace cleanup
+│   ├── retrieval.py        # Top-k passages ranked by cosine similarity
 │   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
 │   └── sample.txt          # Sample input
@@ -627,13 +695,13 @@ rag-agent-systems/
 │   ├── test_embedding_sdk.py
 │   ├── test_local_embeddings.py
 │   ├── test_preprocessing.py
+│   ├── test_retrieval.py
 │   └── test_similarity.py
 └── README.md              # Implementation status and usage
 ```
 
 ## Planned work
 
-- Rank passages by local embedding similarity and select relevant context.
 - Answers grounded in retrieved passages, with source references.
 - Vector-store persistence and DOCX/MinIO integrations.
 - Framework integrations, evaluation, reliability, and agent tools.
@@ -661,6 +729,9 @@ rag-agent-systems/
   a pinned model revision, offline caching, token-length validation, and no API
   credentials. Verified real vectors and scores and removed temporary package
   downloads to keep the total runtime environment around 1.2 GB on this Mac.
+- Added top-k semantic retrieval with stable ranking, complete source metadata,
+  validation of every candidate, and a configurable CLI limit. Verified the
+  ranked output with the cached local model and checked both Python versions.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,
