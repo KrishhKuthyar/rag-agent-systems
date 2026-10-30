@@ -15,6 +15,7 @@ from rag.local_embeddings import (
     load_local_model,
 )
 from rag.preprocessing import clean_text
+from rag.prompting import build_answer_messages
 from rag.retrieval import rank_chunks
 from rag.similarity import cosine_similarity
 
@@ -25,6 +26,7 @@ def main() -> None:
     )
     parser.add_argument("--query", default="Why do chunks overlap?")
     parser.add_argument("--top-k", type=int, default=2, help="maximum number of passages to retrieve")
+    parser.add_argument("--show-prompt", action="store_true", help="display the answer messages without generating an answer")
     parser.add_argument(
         "--download-model",
         action="store_true",
@@ -95,6 +97,12 @@ def main() -> None:
 
     print("\nContext for answer generation:")
     print(context if context else "No passages were retrieved; no context is available.")
+
+    if args.show_prompt:
+        messages = build_answer_messages(args.query, context)
+        print("\nAnswer prompt (no generation):")
+        for message in messages:
+            print(f"\n{message['role'].upper()}:\n{message['content']}")
 
 
 if __name__ == "__main__":

@@ -23,8 +23,8 @@ four sample passages. Downloading and cached offline inference have both been
 verified on this Mac. No API key or paid request is needed for local embeddings.
 The demo also retrieves the top matching passages in descending cosine order,
 preserving their text, IDs, sources, and offsets. It formats the selected
-passages as source-labeled context for future answer generation. Persistence
-and answer generation remain pending.
+passages as source-labeled context and can display an evidence-grounded answer
+prompt. Persistence and answer generation remain pending.
 
 ## Run
 
@@ -691,6 +691,50 @@ context should contain `[S1]` only, with offsets `[100:220]` and the same text.
 The context labels provide references for a future answer model; generated
 answers and citation verification are still planned.
 
+## Prepare an evidence-grounded answer prompt
+
+`build_answer_messages(question, context)` in `rag/prompting.py` packages the
+question and labeled evidence as two chat messages. A system message instructs
+the model to use only the evidence, cite supporting labels such as `[S1]`, treat
+document content as evidence rather than instructions, and admit when evidence
+is insufficient. A user message contains the exact context and question.
+Building this prompt uses standard-library Python and does not call a model.
+
+```python
+messages = [
+    {"role": "system", "content": instructions},
+    {"role": "user", "content": f"Evidence:\n{evidence}\n\nQuestion: {question}\n\nAnswer:"},
+]
+```
+
+Square brackets construct a list; each dictionary inside describes one message.
+`role` identifies the message's purpose and `content` holds its text. The
+f-string inserts evidence and the question without changing their contents.
+The helper rejects blank questions and non-string inputs. Empty context is
+explicitly marked `(No passages retrieved.)`. The required insufficient-evidence
+response is `I don't have enough evidence in the provided passages to answer.`
+Prompt instructions express the intended behavior; they do not verify factual
+support or guarantee that a model follows them.
+
+To inspect the prompt after real local retrieval:
+
+```bash
+.venv/bin/python embedding_demo.py --query "Why do chunks overlap?" --top-k 1 --show-prompt
+```
+
+`--show-prompt` uses `action="store_true"`, so supplying the flag enables printing.
+The actual cached-model run selected chunk 1 at 0.5839, formatted `[S1]` with
+offsets `[100:220]`, and printed `SYSTEM:` then `USER:`. The user message began
+with `Evidence:` followed by that exact context, and ended with:
+
+```text
+Question: Why do chunks overlap?
+
+Answer:
+```
+
+There was no answer-model loading, download, or generated answer in this step.
+
 ## Optional historical OpenAI example
 
 The previous paid integration is retained separately in
@@ -747,10 +791,15 @@ ranked example was also run with the real cached model and returned chunks 1 the
 Context formatting adds eight tests for retrieval-order labels and provenance,
 verbatim Unicode and whitespace, empty selections, invalid or incomplete metadata,
 inconsistent offsets, unchanged inputs, and CLI formatting of selected passages
-only. All 82 tests pass in the project environment. On Python 3.9 and the
-development shell's Python, 79 pass and three optional SDK tests are skipped.
+only.
 The original local runner starts on both Python versions; the dependency-backed
 example was run in the Python 3.12 environment with the real cached model.
+
+Prompt construction adds seven tests for message roles and instructions,
+verbatim evidence and questions, empty context, invalid inputs, independent
+message records, and the CLI prompt display. All 89 tests pass in the project
+environment; Python 3.9 and the shell's Python pass 86 with three optional SDK
+checks skipped. The prompt display was run with real cached embeddings.
 
 ## Project structure
 
@@ -770,6 +819,7 @@ rag-agent-systems/
 │   ├── embeddings.py       # Embedding requests and response validation
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
 │   ├── preprocessing.py    # Prose whitespace cleanup
+│   ├── prompting.py        # Evidence-grounded answer messages
 │   ├── retrieval.py        # Top-k passages ranked by cosine similarity
 │   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
@@ -782,6 +832,7 @@ rag-agent-systems/
 │   ├── test_embedding_sdk.py
 │   ├── test_local_embeddings.py
 │   ├── test_preprocessing.py
+│   ├── test_prompting.py
 │   ├── test_retrieval.py
 │   └── test_similarity.py
 └── README.md              # Implementation status and usage
@@ -822,6 +873,9 @@ rag-agent-systems/
 - Added source-labeled context from selected passages, preserving complete text
   and source metadata, with explicit empty results and validation of offsets.
   Verified the context with the real model and checked Python 3.9 compatibility.
+- Added inspectable answer messages containing citation and insufficient-evidence
+  instructions, exact labeled context, and the question. Verified `--show-prompt`
+  using real offline retrieval and checked both Python versions.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,
