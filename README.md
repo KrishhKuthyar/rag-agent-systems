@@ -22,8 +22,9 @@ model to produce real 384-dimensional vectors and compare a question with the
 four sample passages. Downloading and cached offline inference have both been
 verified on this Mac. No API key or paid request is needed for local embeddings.
 The demo also retrieves the top matching passages in descending cosine order,
-preserving their text, IDs, sources, and offsets. Persistence and answer
-generation remain pending.
+preserving their text, IDs, sources, and offsets. It formats the selected
+passages as source-labeled context for future answer generation. Persistence
+and answer generation remain pending.
 
 ## Run
 
@@ -612,6 +613,84 @@ run. There is no persistent vector index or relevance threshold yet. A top
 result can still be unrelated when the document lacks an answer; a similarity
 score is not a confidence percentage.
 
+## Build source-labeled context
+
+After retrieval, an answer model will need the selected passage text and a way
+to cite its source. `build_context(matches)` in `rag/context.py` converts the
+selected `(chunk, score)` pairs into one string containing `[S1]`, `[S2]`, and
+subsequent evidence blocks in retrieval order. The runner now prints that
+context after the ranked results. This step uses standard-library Python and
+requires no new dependencies, downloads, or paid requests.
+
+The flow is: load → clean → chunk → embed → rank → build labeled context →
+display. Answer generation remains planned. The question is printed separately
+by the runner; this function formats the retrieved evidence only.
+
+The central Python syntax is:
+
+```python
+blocks = []
+for number, (chunk, _score) in enumerate(matches, start=1):
+    # Validate metadata, then assemble a block with f-strings.
+    blocks.append(block)
+return "\n\n".join(blocks)
+```
+
+`enumerate(..., start=1)` adds numbering beginning at one. The loop unpacks each
+numbered `(chunk, score)` pair into `number`, `chunk`, and `_score`; the underscore
+prefix indicates that the score is intentionally unused when formatting evidence.
+An f-string such as `f"[S{number}]\n"` inserts the number and a newline. Adjacent
+strings inside parentheses form one block. `.append(block)` collects each block,
+and `"\n\n".join(blocks)` joins them with a blank line between passages.
+
+The formatter requires nonblank text, source, and chunk ID, plus nonnegative
+integer character offsets with an exclusive end. The offset span must equal the
+passage's character length. Invalid metadata raises an error instead of producing
+incomplete evidence. Text, Unicode, whitespace, and paragraph breaks are retained
+exactly, and input dictionaries are unchanged. An empty selection returns `""`;
+the runner reports that no context is available. Labels are local to the current
+result: `[S1]` means the first retrieved passage, while the chunk ID retains its
+existing identity.
+
+Run the complete local example:
+
+```bash
+.venv/bin/python embedding_demo.py --query "Why do chunks overlap?" --top-k 2
+```
+
+The real cached-model check used `data/sample.txt`, 120-character chunks with
+20-character overlap, five 384-dimensional embeddings, and the question above.
+It selected chunk 1 (0.5839) then chunk 0 (0.3663). The new output was:
+
+```text
+Context for answer generation:
+[S1]
+Source: /Users/balakuthyaru/Documents/AI/rag-agent-systems/data/sample.txt
+Chunk ID: fa85445b534fc63f802420b2ed3e8ed1b0ded208caade6879e74d99e922c2fe1
+Offsets: [100:220]
+Text:
+.
+
+Chunk overlap repeats some text between neighboring passages. It can preserve context when an idea crosses a chunk bo
+
+[S2]
+Source: /Users/balakuthyaru/Documents/AI/rag-agent-systems/data/sample.txt
+Chunk ID: 5e2e42cefa2164ad1559073e11fab7800ecc8eb89fe0de1a5ec65589913271fc
+Offsets: [0:120]
+Text:
+RAG study notes
+
+A RAG system retrieves relevant passages from documents before generating an answer.
+
+Chunk overlap rep
+```
+
+The partial words above come from the existing character-based chunk boundaries;
+formatting preserves them. For manual review, run with `--top-k 1`: the final
+context should contain `[S1]` only, with offsets `[100:220]` and the same text.
+The context labels provide references for a future answer model; generated
+answers and citation verification are still planned.
+
 ## Optional historical OpenAI example
 
 The previous paid integration is retained separately in
@@ -662,10 +741,16 @@ run twice, including a cached run without network access.
 
 Retrieval adds 12 tests covering descending scores, top-k limits, stable ties,
 negative scores, empty collections, retained source metadata, unchanged inputs,
-invalid vectors and incomplete batches, and CLI selection and validation. All
-74 tests pass in the project environment; on Python 3.9 and the development
-shell's Python, 71 pass and three optional SDK tests are skipped. The ranked
-example was also run with the real cached model and returned chunks 1 then 0.
+invalid vectors and incomplete batches, and CLI selection and validation. The
+ranked example was also run with the real cached model and returned chunks 1 then 0.
+
+Context formatting adds eight tests for retrieval-order labels and provenance,
+verbatim Unicode and whitespace, empty selections, invalid or incomplete metadata,
+inconsistent offsets, unchanged inputs, and CLI formatting of selected passages
+only. All 82 tests pass in the project environment. On Python 3.9 and the
+development shell's Python, 79 pass and three optional SDK tests are skipped.
+The original local runner starts on both Python versions; the dependency-backed
+example was run in the Python 3.12 environment with the real cached model.
 
 ## Project structure
 
@@ -680,6 +765,7 @@ rag-agent-systems/
 ├── rag/
 │   ├── __init__.py
 │   ├── chunking.py         # Overlapping chunks and stable passage IDs
+│   ├── context.py          # Source-labeled text from retrieved passages
 │   ├── documents.py        # Document loading
 │   ├── embeddings.py       # Embedding requests and response validation
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
@@ -691,6 +777,7 @@ rag-agent-systems/
 ├── tests/
 │   ├── test_chunk_ids.py
 │   ├── test_chunking.py
+│   ├── test_context.py
 │   ├── test_embeddings.py
 │   ├── test_embedding_sdk.py
 │   ├── test_local_embeddings.py
@@ -732,6 +819,9 @@ rag-agent-systems/
 - Added top-k semantic retrieval with stable ranking, complete source metadata,
   validation of every candidate, and a configurable CLI limit. Verified the
   ranked output with the cached local model and checked both Python versions.
+- Added source-labeled context from selected passages, preserving complete text
+  and source metadata, with explicit empty results and validation of offsets.
+  Verified the context with the real model and checked Python 3.9 compatibility.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from rag.chunking import chunk_document
+from rag.context import build_context
 from rag.documents import load_document
 from rag.local_embeddings import (
     LOCAL_DIMENSIONS,
@@ -62,6 +63,7 @@ def main() -> None:
         )
         vectors = embed_texts_locally(texts, model)
         matches = rank_chunks(chunks, vectors[:-1], vectors[-1], top_k=args.top_k)
+        context = build_context(matches)
     except ImportError:
         parser.error("install dependencies with: .venv/bin/python -m pip install -r requirements-embeddings.txt")
     except OSError:
@@ -90,6 +92,9 @@ def main() -> None:
         print(f"Offsets: [{chunk['start']}:{chunk['end']}]")
         print(f"ID: {chunk['id']}")
         print(f"Text: {chunk['text']!r}")
+
+    print("\nContext for answer generation:")
+    print(context if context else "No passages were retrieved; no context is available.")
 
 
 if __name__ == "__main__":
