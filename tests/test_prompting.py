@@ -15,9 +15,10 @@ class PromptingTests(unittest.TestCase):
         context = "[S1]\nText:\n café notes\n\nKeep paragraph breaks. "
         question = "What do café notes contain?"
         messages = build_answer_messages(question, context)
-        self.assertEqual([message["role"] for message in messages], ["system", "user"])
-        self.assertEqual(messages[1]["content"],
-                         f"Evidence:\n{context}\n\nQuestion: {question}\n\nAnswer:")
+        self.assertEqual([message["role"] for message in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[-1]["content"],
+                         f"Evidence:\n{context}\n\nQuestion: {question}\n\n"
+                         "Answer in one sentence using the evidence and include its [S1]-style citation:")
 
     def test_instructions_require_evidence_citations_and_abstention(self):
         instructions = build_answer_messages("Question?", "[S1] Evidence")[0]["content"]
@@ -29,7 +30,7 @@ class PromptingTests(unittest.TestCase):
         for context in ("", " \n"):
             with self.subTest(context=context):
                 messages = build_answer_messages("Question?", context)
-                self.assertIn("(No passages retrieved.)", messages[1]["content"])
+                self.assertIn("(No passages retrieved.)", messages[-1]["content"])
 
     def test_blank_or_nonstr_question_is_rejected(self):
         for question in ("", " \n", None, 123):

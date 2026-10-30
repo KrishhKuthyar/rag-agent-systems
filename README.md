@@ -24,7 +24,9 @@ verified on this Mac. No API key or paid request is needed for local embeddings.
 The demo also retrieves the top matching passages in descending cosine order,
 preserving their text, IDs, sources, and offsets. It formats the selected
 passages as source-labeled context and can display an evidence-grounded answer
-prompt. Persistence and answer generation remain pending.
+prompt. A separate local RAG runner generates answers and checks their citation
+labels against the retrieved sources. Persistence and factual-support evaluation
+remain pending.
 
 ## Run
 
@@ -694,16 +696,21 @@ answers and citation verification are still planned.
 ## Prepare an evidence-grounded answer prompt
 
 `build_answer_messages(question, context)` in `rag/prompting.py` packages the
-question and labeled evidence as two chat messages. A system message instructs
+question and labeled evidence as chat messages. A system message instructs
 the model to use only the evidence, cite supporting labels such as `[S1]`, treat
 document content as evidence rather than instructions, and admit when evidence
-is insufficient. A user message contains the exact context and question.
+is insufficient. One worked user/assistant example demonstrates the citation
+format using a backup question. The final user message contains the actual
+context and question. The demonstration teaches format and is not a retrieved
+source for the real question.
 Building this prompt uses standard-library Python and does not call a model.
 
 ```python
 messages = [
     {"role": "system", "content": instructions},
-    {"role": "user", "content": f"Evidence:\n{evidence}\n\nQuestion: {question}\n\nAnswer:"},
+    {"role": "user", "content": example_task},
+    {"role": "assistant", "content": example_answer},
+    {"role": "user", "content": actual_task},
 ]
 ```
 
@@ -723,17 +730,133 @@ To inspect the prompt after real local retrieval:
 ```
 
 `--show-prompt` uses `action="store_true"`, so supplying the flag enables printing.
-The actual cached-model run selected chunk 1 at 0.5839, formatted `[S1]` with
-offsets `[100:220]`, and printed `SYSTEM:` then `USER:`. The user message began
-with `Evidence:` followed by that exact context, and ended with:
+The cached-model run selects chunk 1 at 0.5839 and formats `[S1]` with offsets
+`[100:220]`. It prints the system instructions, the worked example, and the final
+user message. That final message begins with `Evidence:` followed by the exact
+context, and ends with:
 
 ```text
 Question: Why do chunks overlap?
 
-Answer:
+Answer in one sentence using the evidence and include its [S1]-style citation:
 ```
 
 There was no answer-model loading, download, or generated answer in this step.
+
+## Generate an answer locally
+
+`rag_demo.py` connects the complete question-to-answer path: load the sample,
+clean and chunk it, embed passages and the question with MiniLM, retrieve the
+top matches, build labeled context and answer messages, and generate answer text
+with a separate local model. MiniLM still handles similarity; the answer model
+reads text messages rather than embedding vectors.
+
+The answer model is
+[`Qwen/Qwen2.5-0.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct),
+an Apache-2.0 instruction model with about 0.49 billion parameters. Its revision
+is pinned to `7ae557604adf67be50417f59c2c2f167def9a775`. It uses the existing
+Transformers and PyTorch dependencies from `requirements-embeddings.txt`; no
+new library installation is needed in this workspace. The loader selects CPU,
+float32 inference and safetensors weights, disables remote custom code, and
+uses cached model files unless downloads are explicitly allowed.
+
+For a fresh setup, after installing the local dependencies:
+
+```bash
+.venv/bin/python rag_demo.py --download-models --query "Why do chunks overlap?" --top-k 2
+```
+
+For ordinary cached runs:
+
+```bash
+.venv/bin/python rag_demo.py --query "Why do chunks overlap?" --top-k 2
+```
+
+Add `--show-prompt` to inspect the exact messages. `--max-new-tokens` defaults
+to 128 and accepts 1–256. It limits generated tokens, not characters. The runner
+prints the complete selected context so citation labels can be traced to text,
+source paths, offsets, and IDs. For an empty document it returns the explicit
+insufficient-evidence message without loading either model.
+
+`rag/generation.py` loads the tokenizer and model and follows this flow:
+
+```python
+inputs = tokenizer.apply_chat_template(
+    messages, tokenize=True, add_generation_prompt=True,
+    return_dict=True, return_tensors="pt", truncation=False,
+)
+with torch.inference_mode():
+    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False,
+                             pad_token_id=tokenizer.eos_token_id)
+answer_ids = outputs[0][input_length:].tolist()
+answer = tokenizer.decode(answer_ids, skip_special_tokens=True).strip()
+```
+
+The model's [chat template](https://huggingface.co/docs/transformers/en/chat_templating)
+converts role/content dictionaries into its expected token sequence.
+`return_tensors="pt"` requests PyTorch arrays. `**inputs` expands the dictionary
+into named model arguments, including input IDs and the attention mask.
+`torch.inference_mode()` avoids gradient tracking; this is inference, not
+training. `do_sample=False` chooses greedy generation. The model returns the
+prompt followed by its completion, so `[input_length:]` keeps only new tokens.
+`.decode(...)` converts them back into readable text.
+
+The helper rejects prompts above 2,048 tokens without truncation and also
+checks that prompt plus requested output fits the model window. It reports
+empty outputs, interrupted generation, and exhausted output-token limits as
+failures. `check_answer_citations` requires a source label on an ordinary answer
+and rejects unavailable labels; the exact insufficient-evidence response is
+allowed without a citation. A regex extracts literal `[S...]` references, and
+each is compared with the allowed source numbers. This checks label references,
+not whether the text of a source supports every claim. The small model can
+still make factual mistakes or answer questions unsupported by the evidence.
+
+### Observed offline answers and limitations
+
+Both models have been downloaded in this workspace. The combined model cache
+is about 1.0 GB and the existing virtual environment is about 1.1 GB, for a
+project runtime footprint of about 2.1 GB. There was about 23 GiB of disk space
+available after setup. Model files and the environment remain ignored by Git.
+
+This cached command was run with network access blocked:
+
+```bash
+.venv/bin/python rag_demo.py --query "Why do chunks overlap?" --top-k 1
+```
+
+It used `data/sample.txt`, 120-character chunks, 20-character overlap, and
+`max_new_tokens=128`. Retrieval selected chunk 1 as `[S1]` (offsets `[100:220]`).
+The actual answer was:
+
+```text
+Generated answer:
+Chunks overlap because they repeat some text between neighboring passages, preserving context when ideas cross them. [S1]
+Citation labels checked against retrieved sources; factual support needs review.
+Generation time: 2.0 seconds
+```
+
+The recorded time covers generation and label checking, excluding model loading.
+With `--top-k 2`, the observed answer was broader: `Chunks overlap because they
+contain similar information that needs to be preserved during data processing.
+[S1]`. More retrieved text did not improve this example's answer specificity.
+
+An unsupported-question check was also run offline:
+
+```bash
+.venv/bin/python rag_demo.py --query "What is the capital of France?" --top-k 1
+```
+
+The model replied `The capital of France is Paris. [S1]` even though its retrieved
+passage concerned source metadata. This is an observed grounding failure:
+the label exists, but the passage does not support the answer. The current
+label check passes that case and the runner explicitly requests factual review.
+Do not interpret a passing label check as evidence-grounded correctness.
+Reliable abstention and factual-support evaluation remain planned work.
+
+The first generation attempt also omitted citations and failed visibly rather
+than being counted as a valid cited answer. The final prompt includes one worked
+formatting example to improve citation compliance; that is guidance rather than
+a correctness guarantee.
 
 ## Optional historical OpenAI example
 
@@ -797,9 +920,15 @@ example was run in the Python 3.12 environment with the real cached model.
 
 Prompt construction adds seven tests for message roles and instructions,
 verbatim evidence and questions, empty context, invalid inputs, independent
-message records, and the CLI prompt display. All 89 tests pass in the project
-environment; Python 3.9 and the shell's Python pass 86 with three optional SDK
-checks skipped. The prompt display was run with real cached embeddings.
+message records, and the CLI prompt display. The prompt display was run with
+real cached embeddings.
+
+Generation adds 16 tests for pinned offline loading, chat-template use, decoding
+only the completion, input and output limits, empty answers, failure propagation,
+citation labels and abstention, and runner behavior including empty documents.
+All 105 tests pass in the project environment. Python 3.9 and the shell's
+Python pass 102, with three optional SDK tests skipped. The core runner starts
+on both versions; the model-backed command uses the Python 3.12 environment.
 
 ## Project structure
 
@@ -807,6 +936,7 @@ checks skipped. The prompt display was run with real cached embeddings.
 rag-agent-systems/
 ├── main.py                 # Runnable entry point
 ├── embedding_demo.py       # Free local embedding example
+├── rag_demo.py             # Local retrieval and answer generation
 ├── openai_embedding_demo.py # Optional paid API example, never run by default
 ├── requirements-embeddings.txt # Local model dependency pins
 ├── requirements-openai.txt # Optional API dependency pins
@@ -817,6 +947,7 @@ rag-agent-systems/
 │   ├── context.py          # Source-labeled text from retrieved passages
 │   ├── documents.py        # Document loading
 │   ├── embeddings.py       # Embedding requests and response validation
+│   ├── generation.py       # Local answer model and citation-label checks
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
 │   ├── preprocessing.py    # Prose whitespace cleanup
 │   ├── prompting.py        # Evidence-grounded answer messages
@@ -830,6 +961,7 @@ rag-agent-systems/
 │   ├── test_context.py
 │   ├── test_embeddings.py
 │   ├── test_embedding_sdk.py
+│   ├── test_generation.py
 │   ├── test_local_embeddings.py
 │   ├── test_preprocessing.py
 │   ├── test_prompting.py
@@ -840,7 +972,8 @@ rag-agent-systems/
 
 ## Planned work
 
-- Answers grounded in retrieved passages, with source references.
+- Retrieval-quality evaluation and factual-support checks for generated answers.
+- Reliable abstention when retrieved passages cannot answer the question.
 - Vector-store persistence and DOCX/MinIO integrations.
 - Framework integrations, evaluation, reliability, and agent tools.
 
@@ -876,6 +1009,8 @@ rag-agent-systems/
 - Added inspectable answer messages containing citation and insufficient-evidence
   instructions, exact labeled context, and the question. Verified `--show-prompt`
   using real offline retrieval and checked both Python versions.
+- Connected the question-to-answer path to a pinned local Qwen model with bounded
+  generation, offline defaults, explicit failures, and citation-label checks.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

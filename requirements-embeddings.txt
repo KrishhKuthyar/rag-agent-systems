@@ -1,4 +1,4 @@
-# Free local embedding dependencies, tested on Python 3.12 / macOS arm64.
+# Free local embedding and generation dependencies, tested on Python 3.12 / macOS arm64.
 # Exact versions include Sentence Transformers and its active dependencies.
 annotated-doc==0.0.5
 anyio==4.15.1
