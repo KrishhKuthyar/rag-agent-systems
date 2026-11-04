@@ -27,6 +27,8 @@ passages as source-labeled context and can display an evidence-grounded answer
 prompt. A separate local RAG runner generates answers and checks their citation
 labels against the retrieved sources. Persistence and factual-support evaluation
 remain pending.
+A labeled six-question dataset and local evaluation runner now measure retrieval
+hits and ranking on the sample document, with unanswerable cases reported separately.
 
 ## Run
 
@@ -858,6 +860,81 @@ than being counted as a valid cited answer. The final prompt includes one worked
 formatting example to improve citation compliance; that is guidance rather than
 a correctness guarantee.
 
+## Evaluate retrieval against labeled evidence
+
+`evaluate.py` runs a small, repeatable retrieval baseline using
+`data/retrieval_eval.json`. Four questions have manually labeled evidence quotes;
+two have no supporting evidence in the sample. This evaluates finding passages,
+not generated-answer correctness or automatic abstention. It reuses the cached
+MiniLM model and makes no paid requests or new model downloads.
+
+```bash
+.venv/bin/python evaluate.py --top-k 1
+```
+
+The dataset stores a document path relative to its own folder, a SHA-256
+fingerprint of cleaned text, and question records such as:
+
+```json
+{"id": "overlap", "question": "Why do chunks overlap?", "evidence": ["It can preserve context"]}
+```
+
+An empty `evidence` list labels a question as unanswerable from this document.
+Those labels are human expectations, not something the embedding model predicts.
+The fingerprint and evidence quotes are checked before loading the model. If
+the document changes, review the annotations and update the fingerprint rather
+than silently treating stale labels as valid.
+
+The flow is: load and validate labels → load/clean the document → make the same
+120-character chunks with 20-character overlap → embed four chunks and six
+questions in one batch → retrieve for every question → compare with labeled
+evidence → print every result and aggregate metrics. `rag/evaluation.py` uses
+standard-library Python, and its metrics can be checked with hand-written vectors.
+
+A chunk is relevant when it contains at least one labeled evidence quote.
+The set comprehension collects relevant chunk indexes, and `any(...)` checks
+whether at least one quote occurs in a passage. `zip(cases, query_vectors)`
+pairs each question record with its embedding after checking their counts.
+`enumerate(matches, start=1)` supplies the rank of the first relevant result.
+
+- `Hit@k`: fraction of answerable questions with a relevant passage in the top k.
+- `MRR@k`: average reciprocal rank of the first relevant passage within those
+  results. A first-place hit contributes 1, second place contributes 1/2, and a
+  miss contributes 0.
+- Unanswerable questions: shown separately, with their retrieved passages and
+  scores. They do not count as passing examples or enter the metric denominator.
+  A dataset with only unanswerable questions reports metrics as N/A.
+
+Actual cached offline run (`top_k=1`, six questions, ten 384-dimensional vectors):
+
+| Question ID | Labeled relevant chunks | Retrieved chunk | Cosine | Outcome |
+| --- | --- | --- | --- | --- |
+| overlap | 1 | 1 | 0.5839 | HIT |
+| rag | 0 | 0 | 0.7147 | HIT |
+| source | 2 | 2 | 0.5689 | HIT |
+| unicode | 3 | 3 | 0.4725 | HIT |
+| france | none | 2 | 0.0689 | No supporting evidence labeled |
+| football | none | 0 | 0.0569 | No supporting evidence labeled |
+
+```text
+Answerable cases: 4
+Hit@1: 1.0000
+MRR@1: 1.0000
+Unanswerable cases reported separately: 2
+Retrieval baseline only: no answer generation or automatic abstention was evaluated.
+```
+
+These results describe four positive examples on one short document; they are
+not a general accuracy claim. Top-k retrieval still returns passages for the
+two unsupported questions. Improving abstention requires further examples and
+evaluation; these six scores do not establish a reliable cutoff.
+
+For manual review, inspect the JSON evidence quotes, run the command, and compare
+each printed question, relevant chunk, and retrieved score. Change `--top-k 1`
+to `--top-k 2` to inspect ranking with more passages. Dataset or embedding errors
+fail the run rather than dropping cases. Generated reports are printed to the
+terminal rather than committed as runtime data.
+
 ## Optional historical OpenAI example
 
 The previous paid integration is retained separately in
@@ -926,9 +1003,15 @@ real cached embeddings.
 Generation adds 16 tests for pinned offline loading, chat-template use, decoding
 only the completion, input and output limits, empty answers, failure propagation,
 citation labels and abstention, and runner behavior including empty documents.
-All 105 tests pass in the project environment. Python 3.9 and the shell's
-Python pass 102, with three optional SDK tests skipped. The core runner starts
+The core runner starts
 on both versions; the model-backed command uses the Python 3.12 environment.
+
+Retrieval evaluation adds 11 tests covering ranking metrics, top-k changes,
+unanswerable denominators, all-negative datasets, schema and document integrity,
+missing embeddings, lost evidence at chunk boundaries, and the offline CLI.
+All 116 tests pass in the project environment. Python 3.9 and the shell's Python
+pass 113 with three optional SDK tests skipped. Startup was checked on both
+versions, and the real evaluation ran with cached MiniLM embeddings.
 
 ## Project structure
 
@@ -937,6 +1020,7 @@ rag-agent-systems/
 ├── main.py                 # Runnable entry point
 ├── embedding_demo.py       # Free local embedding example
 ├── rag_demo.py             # Local retrieval and answer generation
+├── evaluate.py             # Labeled retrieval evaluation
 ├── openai_embedding_demo.py # Optional paid API example, never run by default
 ├── requirements-embeddings.txt # Local model dependency pins
 ├── requirements-openai.txt # Optional API dependency pins
@@ -947,6 +1031,7 @@ rag-agent-systems/
 │   ├── context.py          # Source-labeled text from retrieved passages
 │   ├── documents.py        # Document loading
 │   ├── embeddings.py       # Embedding requests and response validation
+│   ├── evaluation.py       # Dataset checks and retrieval metrics
 │   ├── generation.py       # Local answer model and citation-label checks
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
 │   ├── preprocessing.py    # Prose whitespace cleanup
@@ -954,13 +1039,15 @@ rag-agent-systems/
 │   ├── retrieval.py        # Top-k passages ranked by cosine similarity
 │   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
-│   └── sample.txt          # Sample input
+│   ├── sample.txt          # Sample input
+│   └── retrieval_eval.json # Questions and expected evidence
 ├── tests/
 │   ├── test_chunk_ids.py
 │   ├── test_chunking.py
 │   ├── test_context.py
 │   ├── test_embeddings.py
 │   ├── test_embedding_sdk.py
+│   ├── test_evaluation.py
 │   ├── test_generation.py
 │   ├── test_local_embeddings.py
 │   ├── test_preprocessing.py
@@ -972,7 +1059,7 @@ rag-agent-systems/
 
 ## Planned work
 
-- Retrieval-quality evaluation and factual-support checks for generated answers.
+- Broader retrieval evaluation and factual-support checks for generated answers.
 - Reliable abstention when retrieved passages cannot answer the question.
 - Vector-store persistence and DOCX/MinIO integrations.
 - Framework integrations, evaluation, reliability, and agent tools.
@@ -1011,6 +1098,9 @@ rag-agent-systems/
   using real offline retrieval and checked both Python versions.
 - Connected the question-to-answer path to a pinned local Qwen model with bounded
   generation, offline defaults, explicit failures, and citation-label checks.
+- Added a labeled retrieval baseline with document-integrity checks, Hit@k and
+  MRR@k, and separate unsupported-question reporting. Verified six real offline
+  queries, four positive retrieval hits, and Python 3.9 compatibility.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

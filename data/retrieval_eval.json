@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "document": "sample.txt",
+  "cleaned_sha256": "11ef9eeac885f5c9d7cced54bb410bba8d9c6f02240aab6bb78cc01e8c2e101d",
+  "cases": [
+    {
+      "id": "overlap",
+      "question": "Why do chunks overlap?",
+      "evidence": ["It can preserve context"]
+    },
+    {
+      "id": "rag",
+      "question": "What does a RAG system retrieve before generating an answer?",
+      "evidence": ["retrieves relevant passages from documents before generating an answer."]
+    },
+    {
+      "id": "source",
+      "question": "What does source metadata record?",
+      "evidence": ["Source metadata records where a passage came from."]
+    },
+    {
+      "id": "unicode",
+      "question": "Can filenames contain Unicode characters?",
+      "evidence": ["may contain Unicode characters."]
+    },
+    {
+      "id": "france",
+      "question": "What is the capital of France?",
+      "evidence": []
+    },
+    {
+      "id": "football",
+      "question": "Who won the 2022 World Cup?",
+      "evidence": []
+    }
+  ]
+}
