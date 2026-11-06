@@ -15,13 +15,17 @@ from rag.generation import (
 from rag.local_embeddings import embed_texts_locally, load_local_model
 from rag.preprocessing import clean_text
 from rag.prompting import INSUFFICIENT_EVIDENCE, build_answer_messages
-from rag.retrieval import rank_chunks
+from rag.retrieval import (
+    DEFAULT_MIN_SIMILARITY, filter_by_similarity, rank_chunks, validate_min_similarity,
+)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Answer from sample passages with free local models.")
     parser.add_argument("--query", default="Why do chunks overlap?")
     parser.add_argument("--top-k", type=int, default=2)
+    parser.add_argument("--min-similarity", type=float, default=DEFAULT_MIN_SIMILARITY,
+                        help="minimum passage cosine score before generation (default: 0.25)")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--download-models", action="store_true", help="allow initial public model downloads")
     parser.add_argument("--show-prompt", action="store_true")
@@ -32,6 +36,10 @@ def main() -> None:
         parser.error("--top-k must be a positive integer")
     if not 1 <= args.max_new_tokens <= 256:
         parser.error("--max-new-tokens must be between 1 and 256")
+    try:
+        validate_min_similarity(args.min_similarity)
+    except ValueError as error:
+        parser.error(str(error))
     if sys.version_info < (3, 10):
         parser.error("local models require Python 3.10+; use .venv/bin/python")
 
@@ -54,7 +62,18 @@ def main() -> None:
         texts = [chunk["text"] for chunk in chunks] + [args.query]
         vectors = embed_texts_locally(texts, embedding_model)
         del embedding_model
-        matches = rank_chunks(chunks, vectors[:-1], vectors[-1], top_k=args.top_k)
+        ranked = rank_chunks(chunks, vectors[:-1], vectors[-1], top_k=args.top_k)
+        matches = filter_by_similarity(ranked, args.min_similarity)
+        print("\nRanked passage decisions:")
+        for chunk, score in ranked:
+            decision = "kept" if score >= args.min_similarity else "excluded below cutoff"
+            print(f"Chunk {chunk['index']}: {score:.4f} — {decision}")
+        print(f"Similarity filter: kept {len(matches)} of {len(ranked)} passages "
+              f"(min_similarity={args.min_similarity:.4f})", flush=True)
+        if not matches:
+            print(f"Answer: {INSUFFICIENT_EVIDENCE}")
+            print("No retrieved passage met the cutoff; answer model was not loaded.")
+            return
         context = build_context(matches)
         messages = build_answer_messages(args.query, context)
         print("\nRetrieved context:")

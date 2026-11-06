@@ -134,6 +134,39 @@ class GenerationTests(unittest.TestCase):
 
 
 class RagRunnerTests(unittest.TestCase):
+    def test_low_similarity_abstains_before_loading_answer_model(self):
+        output = io.StringIO()
+        vectors = [[1.0, 0.0]] * 4 + [[0.0, 1.0]]
+        with patch.object(sys, "argv", ["rag_demo.py", "--query", "Unrelated question?"]), \
+             patch.object(rag_demo.sys, "version_info", (3, 12)), \
+             patch.object(rag_demo, "load_local_model"), \
+             patch.object(rag_demo, "embed_texts_locally", return_value=vectors), \
+             patch.object(rag_demo, "load_answer_model") as answer_loader, \
+             patch.object(rag_demo, "generate_answer") as generator, \
+             redirect_stdout(output):
+            rag_demo.main()
+        answer_loader.assert_not_called()
+        generator.assert_not_called()
+        self.assertIn("kept 0 of 2 passages", output.getvalue())
+        self.assertIn(INSUFFICIENT_EVIDENCE, output.getvalue())
+        self.assertIn("answer model was not loaded", output.getvalue())
+
+    def test_only_qualifying_passages_reach_context_and_citation_check(self):
+        output = io.StringIO()
+        vectors = [[1.0, 0.0], [0.8, 0.6], [0.0, 1.0], [-1.0, 0.0], [1.0, 0.0]]
+        with patch.object(sys, "argv", ["rag_demo.py", "--min-similarity", "0.9"]), \
+             patch.object(rag_demo.sys, "version_info", (3, 12)), \
+             patch.object(rag_demo, "load_local_model"), \
+             patch.object(rag_demo, "embed_texts_locally", return_value=vectors), \
+             patch.object(rag_demo, "load_answer_model", return_value=(Mock(), Mock())), \
+             patch.object(rag_demo, "generate_answer", return_value="RAG retrieves passages. [S1]") as generator, \
+             redirect_stdout(output):
+            rag_demo.main()
+        messages = generator.call_args.args[0]
+        self.assertIn("RAG study notes", messages[-1]["content"])
+        self.assertNotIn("[S2]", messages[-1]["content"])
+        self.assertIn("kept 1 of 2 passages", output.getvalue())
+
     def test_default_runner_uses_only_local_models_and_displays_answer(self):
         output = io.StringIO()
         vectors = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0], [0.0, 1.0]]
@@ -182,7 +215,9 @@ class RagRunnerTests(unittest.TestCase):
         self.assertNotIn("Citation labels checked", output.getvalue())
 
     def test_runner_rejects_invalid_options_before_model_loading(self):
-        for option, value in (("--query", " "), ("--top-k", "0"), ("--max-new-tokens", "0"), ("--max-new-tokens", "257")):
+        for option, value in (("--query", " "), ("--top-k", "0"), ("--max-new-tokens", "0"),
+                              ("--max-new-tokens", "257"), ("--min-similarity", "nan"),
+                              ("--min-similarity", "inf"), ("--min-similarity", "1.1")):
             with self.subTest(option=option, value=value):
                 with patch.object(sys, "argv", ["rag_demo.py", option, value]), \
                      patch.object(rag_demo, "load_local_model") as loader, \

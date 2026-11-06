@@ -27,8 +27,10 @@ passages as source-labeled context and can display an evidence-grounded answer
 prompt. A separate local RAG runner generates answers and checks their citation
 labels against the retrieved sources. Persistence and factual-support evaluation
 remain pending.
-A labeled six-question dataset and local evaluation runner now measure retrieval
-hits and ranking on the sample document, with unanswerable cases reported separately.
+A labeled eight-question dataset and local evaluation runner measure retrieval
+hits and ranking, with unanswerable cases reported separately. The RAG runner
+also filters passages by a configurable minimum similarity score and skips
+answer-model loading when none qualify. Factual support remains unverified.
 
 ## Run
 
@@ -842,7 +844,8 @@ With `--top-k 2`, the observed answer was broader: `Chunks overlap because they
 contain similar information that needs to be preserved during data processing.
 [S1]`. More retrieved text did not improve this example's answer specificity.
 
-An unsupported-question check was also run offline:
+Before the minimum-similarity filter was added, this unsupported-question check
+was run offline:
 
 ```bash
 .venv/bin/python rag_demo.py --query "What is the capital of France?" --top-k 1
@@ -852,20 +855,109 @@ The model replied `The capital of France is Paris. [S1]` even though its retriev
 passage concerned source metadata. This is an observed grounding failure:
 the label exists, but the passage does not support the answer. The current
 label check passes that case and the runner explicitly requests factual review.
-Do not interpret a passing label check as evidence-grounded correctness.
-Reliable abstention and factual-support evaluation remain planned work.
+Do not interpret a passing label check as evidence-grounded correctness. The
+score filter below now blocks this low-scoring example before generation;
+reliable abstention for all unsupported questions remains planned work.
 
 The first generation attempt also omitted citations and failed visibly rather
 than being counted as a valid cited answer. The final prompt includes one worked
 formatting example to improve citation compliance; that is guidance rather than
 a correctness guarantee.
 
+## Skip generation when passage similarity is too low
+
+`rag_demo.py` now accepts `--min-similarity`, with a starting default of 0.25.
+After top-k ranking, `filter_by_similarity` in `rag/retrieval.py` retains only
+passages whose cosine score meets or exceeds that value. Each ranked passage's
+score and keep/exclude decision is printed, followed by the total kept. The
+retained passages receive context labels in their existing retrieval order.
+If none qualify, the runner returns the insufficient-evidence message before
+loading Qwen or calling generation.
+
+```python
+ranked = rank_chunks(chunks, vectors[:-1], vectors[-1], top_k=args.top_k)
+matches = filter_by_similarity(ranked, args.min_similarity)
+if not matches:
+    print(f"Answer: {INSUFFICIENT_EVIDENCE}")
+    return
+```
+
+Inside the filter, `if score >= min_similarity:` includes the boundary itself.
+`selected.append((chunk.copy(), score))` retains a passage and its score without
+sharing its mutable dictionary with the input. `if not matches:` is true for
+an empty list. `return` exits before answer-model loading. The cutoff and every
+score must be finite numbers in `[-1, 1]`; invalid values fail explicitly even
+when the selection is empty or a bad score would otherwise be excluded.
+
+The initial four supported questions scored at least 0.4725, while France and
+World Cup questions scored below 0.07. A default of 0.25 is an adjustable demo
+heuristic within that gap. It is not a probability, a calibrated universal
+cutoff, or a factual-support check. Stricter values can reject valid evidence.
+
+Actual offline run with `data/sample.txt`, four 120-character chunks, 20-character
+overlap, `top_k=1`, and `min_similarity=0.25`:
+
+```bash
+.venv/bin/python rag_demo.py --query "What is the capital of France?" --top-k 1
+```
+
+```text
+Ranked passage decisions:
+Chunk 2: 0.0689 — excluded below cutoff
+Similarity filter: kept 0 of 1 passages (min_similarity=0.2500)
+Answer: I don't have enough evidence in the provided passages to answer.
+No retrieved passage met the cutoff; answer model was not loaded.
+```
+
+The supported question was also run with the same settings:
+
+```bash
+.venv/bin/python rag_demo.py --query "Why do chunks overlap?" --top-k 1
+```
+
+Chunk 1 was kept at 0.5839 and the generated answer was:
+`Chunks overlap because they repeat some text between neighboring passages,
+preserving context when ideas cross them. [S1]`
+
+To inspect the policy across all labels:
+
+```bash
+.venv/bin/python evaluate.py --top-k 1 --min-similarity 0.25
+```
+
+Two related but unsupported questions were added to the dataset to expose
+limitations of using a similarity cutoff. The actual cached evaluation returned:
+
+| Question group | Best score(s) | Decision at 0.25 |
+| --- | --- | --- |
+| Four supported questions | 0.5839, 0.7147, 0.5689, 0.4725 | All allowed |
+| Capital of France | 0.0689 | Blocked |
+| World Cup winner | 0.0569 | Blocked |
+| Chunk size guaranteeing best accuracy | 0.4345 | Allowed despite no evidence |
+| Overlap character count for every document | 0.4318 | Allowed despite no evidence |
+
+```text
+Hit@1: 1.0000
+MRR@1: 1.0000
+Unsupported questions blocked: 2 of 4
+Unsupported questions still accepted: 2 of 4
+Supported questions blocked: 0 of 4
+```
+
+The last two questions share topic words with the document, but its text gives
+neither a best chunk size nor a required overlap count. The gate still permits
+generation in these cases. This increment improves low-similarity abstention;
+factual verification and reliable in-topic abstention remain unresolved.
+No model downloads, new dependencies, or paid requests were needed.
+
 ## Evaluate retrieval against labeled evidence
 
 `evaluate.py` runs a small, repeatable retrieval baseline using
 `data/retrieval_eval.json`. Four questions have manually labeled evidence quotes;
-two have no supporting evidence in the sample. This evaluates finding passages,
-not generated-answer correctness or automatic abstention. It reuses the cached
+four have no supporting evidence in the sample, including two related to chunking.
+The default command evaluates finding passages. Supplying `--min-similarity`
+also evaluates the score-filter decision against those labels, as shown above.
+Neither mode evaluates generated-answer correctness. It reuses the cached
 MiniLM model and makes no paid requests or new model downloads.
 
 ```bash
@@ -886,7 +978,7 @@ the document changes, review the annotations and update the fingerprint rather
 than silently treating stale labels as valid.
 
 The flow is: load and validate labels → load/clean the document → make the same
-120-character chunks with 20-character overlap → embed four chunks and six
+120-character chunks with 20-character overlap → embed four chunks and eight
 questions in one batch → retrieve for every question → compare with labeled
 evidence → print every result and aggregate metrics. `rag/evaluation.py` uses
 standard-library Python, and its metrics can be checked with hand-written vectors.
@@ -905,7 +997,8 @@ pairs each question record with its embedding after checking their counts.
   scores. They do not count as passing examples or enter the metric denominator.
   A dataset with only unanswerable questions reports metrics as N/A.
 
-Actual cached offline run (`top_k=1`, six questions, ten 384-dimensional vectors):
+Initial cached offline baseline before the dataset extension (`top_k=1`, six
+questions, ten 384-dimensional vectors):
 
 | Question ID | Labeled relevant chunks | Retrieved chunk | Cosine | Outcome |
 | --- | --- | --- | --- | --- |
@@ -1009,9 +1102,15 @@ on both versions; the model-backed command uses the Python 3.12 environment.
 Retrieval evaluation adds 11 tests covering ranking metrics, top-k changes,
 unanswerable denominators, all-negative datasets, schema and document integrity,
 missing embeddings, lost evidence at chunk boundaries, and the offline CLI.
-All 116 tests pass in the project environment. Python 3.9 and the shell's Python
-pass 113 with three optional SDK tests skipped. Startup was checked on both
-versions, and the real evaluation ran with cached MiniLM embeddings.
+The real evaluation ran with cached MiniLM embeddings.
+
+Similarity filtering adds ten tests for inclusive score boundaries, valid cosine
+ranges, invalid values, input independence, skipping generation, context selection,
+supported questions rejected by a strict cutoff, and unsupported questions that
+still pass. All 126 tests pass in the project environment. Python 3.9 and the
+shell's Python pass 123 with three optional SDK tests skipped. Core startup and
+CLI help were checked on Python 3.9; both real question examples and the eight-case
+evaluation were run offline using the Python 3.12 environment.
 
 ## Project structure
 
@@ -1036,7 +1135,7 @@ rag-agent-systems/
 │   ├── local_embeddings.py # Local MiniLM loading and encoding
 │   ├── preprocessing.py    # Prose whitespace cleanup
 │   ├── prompting.py        # Evidence-grounded answer messages
-│   ├── retrieval.py        # Top-k passages ranked by cosine similarity
+│   ├── retrieval.py        # Top-k ranking and minimum-similarity filtering
 │   └── similarity.py       # Cosine similarity for numeric vectors
 ├── data/
 │   ├── sample.txt          # Sample input
@@ -1101,6 +1200,10 @@ rag-agent-systems/
 - Added a labeled retrieval baseline with document-integrity checks, Hit@k and
   MRR@k, and separate unsupported-question reporting. Verified six real offline
   queries, four positive retrieval hits, and Python 3.9 compatibility.
+- Added a configurable minimum-similarity gate before answer generation, with
+  explicit passage decisions and early abstention. Expanded evaluation to eight
+  cases and measured both blocked questions and unsupported questions still
+  accepted; verified the France refusal and the supported overlap answer offline.
 
 The reference module mainly implements ingestion and low-level vector queries.
 This project will also build the question-to-answer path and agent behavior,

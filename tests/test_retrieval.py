@@ -8,7 +8,37 @@ import unittest
 from unittest.mock import patch
 
 import embedding_demo
-from rag.retrieval import rank_chunks
+from rag.retrieval import filter_by_similarity, rank_chunks
+
+
+class SimilarityFilterTests(unittest.TestCase):
+    def test_cutoff_is_inclusive_and_does_not_change_order(self):
+        matches = [({"index": 2}, 0.8), ({"index": 1}, 0.25), ({"index": 0}, 0.24)]
+        self.assertEqual(filter_by_similarity(matches, 0.25), matches[:2])
+
+    def test_empty_selection_and_full_cosine_range(self):
+        self.assertEqual(filter_by_similarity([]), [])
+        matches = [({"index": 0}, -1.0), ({"index": 1}, 1.0)]
+        self.assertEqual(filter_by_similarity(matches, -1), matches)
+        self.assertEqual(filter_by_similarity(matches, 1), matches[1:])
+
+    def test_invalid_cutoffs_fail_even_for_empty_selection(self):
+        for cutoff in (float("nan"), float("inf"), -1.1, 1.1, True, "0.25", None):
+            with self.subTest(cutoff=cutoff):
+                with self.assertRaisesRegex(ValueError, "min_similarity"):
+                    filter_by_similarity([], cutoff)
+
+    def test_invalid_passage_scores_are_not_silently_excluded(self):
+        for score in (float("nan"), float("inf"), -1.1, 1.1, True, "0.1"):
+            with self.subTest(score=score):
+                with self.assertRaisesRegex(ValueError, "passage similarity"):
+                    filter_by_similarity([({"index": 0}, 1.0), ({"index": 1}, score)])
+
+    def test_returned_metadata_is_independent_of_input(self):
+        matches = [({"index": 0, "text": "original"}, 0.8)]
+        selected = filter_by_similarity(matches)
+        selected[0][0]["text"] = "changed"
+        self.assertEqual(matches[0][0]["text"], "original")
 
 
 class RetrievalTests(unittest.TestCase):

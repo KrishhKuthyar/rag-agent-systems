@@ -105,11 +105,44 @@ class EvaluationTests(unittest.TestCase):
         with patch.object(sys, "argv", ["evaluate.py"]), \
              patch.object(evaluate.sys, "version_info", (3, 12)), \
              patch.object(evaluate, "load_local_model") as loader, \
-             patch.object(evaluate, "embed_texts_locally", return_value=[[1.0, 0.0]] * 10), \
+             patch.object(evaluate, "embed_texts_locally", return_value=[[1.0, 0.0]] * 12), \
              redirect_stdout(output):
             evaluate.main()
         self.assertNotIn("allow_download", loader.call_args.kwargs)
-        self.assertEqual(output.getvalue().count("  Retrieved:"), 6)
+        self.assertEqual(output.getvalue().count("  Retrieved:"), 8)
         self.assertIn("Answerable cases: 4", output.getvalue())
-        self.assertIn("Unanswerable cases reported separately: 2", output.getvalue())
+        self.assertIn("Unanswerable cases reported separately: 4", output.getvalue())
         self.assertIn("no answer generation", output.getvalue())
+
+    def test_filter_reports_both_blocked_and_accepted_unsupported_questions(self):
+        cases = self.cases + [
+            {"id": "close", "question": "Similar but unsupported?", "evidence": []},
+            {"id": "far", "question": "Unrelated?", "evidence": []},
+        ]
+        report = evaluate_retrieval(cases, self.chunks, self.vectors,
+                                    [[1.0, 1.0], [1.0, 0.0], [-1.0, 0.0]], min_similarity=0.25)
+        self.assertEqual(report["unsupported_accepted"], 1)
+        self.assertEqual(report["unsupported_blocked"], 1)
+        self.assertEqual(report["supported_blocked"], 0)
+        self.assertEqual(report["hit_rate"], 1.0)
+        self.assertIsNone(report["rows"][1]["hit"])
+
+    def test_strict_cutoff_can_block_a_supported_question(self):
+        report = evaluate_retrieval(self.cases, self.chunks, self.vectors,
+                                    [[0.0, 1.0]], min_similarity=0.9)
+        self.assertEqual(report["supported_blocked"], 1)
+        self.assertEqual(report["hit_rate"], 0.0)
+        self.assertEqual(report["rows"][0]["selected"], [])
+
+    def test_cli_filter_summary_reports_real_decisions(self):
+        output = io.StringIO()
+        vectors = [[1.0, 0.0]] * 8 + [[-1.0, 0.0]] * 4
+        with patch.object(sys, "argv", ["evaluate.py", "--min-similarity", "0.25"]), \
+             patch.object(evaluate.sys, "version_info", (3, 12)), \
+             patch.object(evaluate, "load_local_model"), \
+             patch.object(evaluate, "embed_texts_locally", return_value=vectors), \
+             redirect_stdout(output):
+            evaluate.main()
+        self.assertIn("Unsupported questions blocked: 4 of 4", output.getvalue())
+        self.assertIn("Supported questions blocked: 0 of 4", output.getvalue())
+        self.assertEqual(output.getvalue().count("decision: ABSTAIN"), 4)

@@ -9,6 +9,7 @@ from rag.documents import load_document
 from rag.evaluation import evaluate_retrieval, load_evaluation_dataset, validate_evaluation_document
 from rag.local_embeddings import LOCAL_MODEL, LOCAL_MODEL_REVISION, embed_texts_locally, load_local_model
 from rag.preprocessing import clean_text
+from rag.retrieval import validate_min_similarity
 
 
 def main() -> None:
@@ -16,9 +17,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate retrieval against labeled sample questions.")
     parser.add_argument("--dataset", type=Path, default=project_root / "data" / "retrieval_eval.json")
     parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--min-similarity", type=float, default=None,
+                        help="optionally evaluate the same score cutoff used by rag_demo.py")
     args = parser.parse_args()
     if args.top_k <= 0:
         parser.error("--top-k must be a positive integer")
+    if args.min_similarity is not None:
+        try:
+            validate_min_similarity(args.min_similarity)
+        except ValueError as error:
+            parser.error(str(error))
     if sys.version_info < (3, 10):
         parser.error("local model dependencies require Python 3.10+; use .venv/bin/python")
     try:
@@ -35,12 +43,17 @@ def main() -> None:
         model = load_local_model(project_root / ".local" / "models")
         texts = [chunk["text"] for chunk in chunks] + [case["question"] for case in cases]
         vectors = embed_texts_locally(texts, model)
-        report = evaluate_retrieval(cases, chunks, vectors[:len(chunks)], vectors[len(chunks):], args.top_k)
+        report = evaluate_retrieval(cases, chunks, vectors[:len(chunks)], vectors[len(chunks):],
+                                    args.top_k, min_similarity=args.min_similarity)
         for row in report["rows"]:
             status = ("HIT" if row["hit"] else "MISS") if row["answerable"] else "NO SUPPORTING EVIDENCE (labeled)"
             print(f"\n{row['id']}: {row['question']}\n  {status}")
             print(f"  Relevant chunks: {row['relevant_indices']}")
             print("  Retrieved: " + ", ".join(f"chunk {index} ({score:.4f})" for index, score in row["retrieved"]))
+            if args.min_similarity is not None:
+                kept = [index for index, _score in row["selected"]]
+                print(f"  After cutoff {args.min_similarity:.4f}: {kept}; "
+                      f"decision: {'ABSTAIN' if row['abstained'] else 'ALLOW GENERATION'}")
         print(f"\nAnswerable cases: {report['answerable_count']}")
         if report["hit_rate"] is None:
             print("Hit@k and MRR@k: N/A (no answerable cases)")
@@ -48,7 +61,13 @@ def main() -> None:
             print(f"Hit@{args.top_k}: {report['hit_rate']:.4f}")
             print(f"MRR@{args.top_k}: {report['mrr']:.4f}")
         print(f"Unanswerable cases reported separately: {report['unanswerable_count']}")
-        print("Retrieval baseline only: no answer generation or automatic abstention was evaluated.")
+        if args.min_similarity is None:
+            print("Retrieval baseline only: no answer generation or automatic abstention was evaluated.")
+        else:
+            print(f"Unsupported questions blocked: {report['unsupported_blocked']} of {report['unanswerable_count']}")
+            print(f"Unsupported questions still accepted: {report['unsupported_accepted']} of {report['unanswerable_count']}")
+            print(f"Supported questions blocked: {report['supported_blocked']} of {report['answerable_count']}")
+            print("Score-filter decisions evaluated; factual support of generated answers was not evaluated.")
     except ImportError:
         parser.error("install local dependencies with .venv/bin/python -m pip install -r requirements-embeddings.txt")
     except (OSError, ValueError) as error:

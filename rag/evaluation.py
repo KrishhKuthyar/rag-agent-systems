@@ -3,9 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Sequence, Union
+from typing import Any, Optional, Sequence, Union
 
-from rag.retrieval import rank_chunks
+from rag.retrieval import filter_by_similarity, rank_chunks, validate_min_similarity
 
 
 def load_evaluation_dataset(path: Path) -> dict[str, Any]:
@@ -54,15 +54,19 @@ def evaluate_retrieval(
     chunk_vectors: Sequence[Sequence[float]],
     query_vectors: Sequence[Sequence[float]],
     top_k: int = 1,
+    min_similarity: Optional[float] = None,
 ) -> dict[str, Any]:
     """Score answerable cases; report unanswerable cases without counting a pass."""
     if not cases:
         raise ValueError("at least one evaluation case is required")
     if len(cases) != len(query_vectors):
         raise ValueError("each evaluation case must have exactly one query embedding")
+    if min_similarity is not None:
+        validate_min_similarity(min_similarity)
     rows = []
     for case, query_vector in zip(cases, query_vectors):
-        matches = rank_chunks(chunks, chunk_vectors, query_vector, top_k=top_k)
+        ranked = rank_chunks(chunks, chunk_vectors, query_vector, top_k=top_k)
+        matches = filter_by_similarity(ranked, min_similarity) if min_similarity is not None else ranked
         relevant = {
             chunk["index"] for chunk in chunks
             if any(quote in chunk["text"] for quote in case["evidence"])
@@ -76,14 +80,20 @@ def evaluate_retrieval(
         rows.append({
             "id": case["id"], "question": case["question"],
             "answerable": answerable, "relevant_indices": sorted(relevant),
-            "retrieved": [(chunk["index"], score) for chunk, score in matches],
+            "retrieved": [(chunk["index"], score) for chunk, score in ranked],
+            "selected": [(chunk["index"], score) for chunk, score in matches],
+            "abstained": not matches,
             "hit": first_rank is not None if answerable else None,
             "reciprocal_rank": (1.0 / first_rank if first_rank else 0.0) if answerable else None,
         })
     scored = [row for row in rows if row["answerable"]]
+    unanswerable = [row for row in rows if not row["answerable"]]
     return {
         "rows": rows, "answerable_count": len(scored),
         "unanswerable_count": len(rows) - len(scored),
         "hit_rate": sum(row["hit"] for row in scored) / len(scored) if scored else None,
         "mrr": sum(row["reciprocal_rank"] for row in scored) / len(scored) if scored else None,
+        "unsupported_accepted": sum(not row["abstained"] for row in unanswerable),
+        "unsupported_blocked": sum(row["abstained"] for row in unanswerable),
+        "supported_blocked": sum(row["abstained"] for row in scored),
     }

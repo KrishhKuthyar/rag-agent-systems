@@ -32,6 +32,16 @@
       "id": "football",
       "question": "Who won the 2022 World Cup?",
       "evidence": []
+    },
+    {
+      "id": "chunk_size",
+      "question": "What chunk size guarantees the best retrieval accuracy?",
+      "evidence": []
+    },
+    {
+      "id": "overlap_size",
+      "question": "How many characters of overlap should every document use?",
+      "evidence": []
     }
   ]
 }
